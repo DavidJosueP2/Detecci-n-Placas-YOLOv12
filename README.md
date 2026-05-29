@@ -81,6 +81,20 @@ early stopping: 10 epocas sin mejora
 .\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --device auto --quick --fraction 0.01 --batch 8 --workers 4 --name placas_yolo12_pro_smoke
 ```
 
+### PC con GPU limitada, comando usado localmente
+
+Para una GPU de 4 GB, usar configuracion conservadora:
+
+```powershell
+.\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --device 0 --batch 4 --workers 0 --imgsz 640 --epochs 50 --patience 10
+```
+
+Si da error de memoria CUDA, bajar a:
+
+```powershell
+.\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --device 0 --batch 2 --workers 0 --imgsz 640 --epochs 50 --patience 10
+```
+
 ### Mas precision si la GPU aguanta
 
 Usar modelo mediano:
@@ -118,3 +132,21 @@ Si sigue fallando:
 ## Modelos
 
 Los checkpoints `.pt` si pueden versionarse si pesan menos de 100 MB. Si alguno supera ese limite, usar Git LFS o subirlo como release asset.
+
+El modelo entrenado final queda normalmente en:
+
+```text
+modelos/placas_yolo12_pro/weights/best.pt
+```
+
+Si el entrenamiento se hace en otra PC, basta con copiar ese `best.pt` a esta maquina y usarlo para inferencia. Por ejemplo, puedes guardarlo como:
+
+```text
+modelos/placas_yolo12_pro/weights/best.pt
+```
+
+o pasarlo explicitamente al script:
+
+```powershell
+.\.venv\Scripts\python.exe probar_imagen.py "ruta\imagen.jpg" --model "ruta\best.pt"
+```
