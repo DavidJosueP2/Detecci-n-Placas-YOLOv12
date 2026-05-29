@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local/editor files
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Environment/config secrets
+.env
+.env.*
+!.env.example
+
+# Datasets and exported archives
+datasets/*
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Ultralytics/runtime outputs
+runs/
+resultados_individuales/
+*.cache
+
+# Training scratch artifacts
+events.out.tfevents*
+wandb/
+mlruns/
+
+# Keep model checkpoints versionable.
+# If a checkpoint exceeds GitHub's 100 MB limit, move it to Git LFS or a release asset.
+!*.pt
+!modelos/**/*.pt
+
