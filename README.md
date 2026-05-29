@@ -95,18 +95,38 @@ Si da error de memoria CUDA, bajar a:
 .\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --device 0 --batch 2 --workers 0 --imgsz 640 --epochs 50 --patience 10
 ```
 
-### Mas precision si la GPU aguanta
+### Variantes para una PC mas potente
 
-Usar modelo mediano:
+Estas opciones son alternativas al comando recomendado. Usan mas memoria y pueden tardar mas, pero pueden mejorar resultados.
+
+Modelo mas grande (`yolo12m.pt`):
 
 ```powershell
-.\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --model yolo12m.pt --device auto --batch -1 --workers 8 --imgsz 768 --epochs 50 --patience 10 --name placas_yolo12m_pro
+.\.venv\Scripts\python.exe entrenamiento_pro.py `
+  --data license_plate_recognition.yaml `
+  --model yolo12m.pt `
+  --device auto `
+  --batch -1 `
+  --workers 8 `
+  --imgsz 768 `
+  --epochs 50 `
+  --patience 10 `
+  --name placas_yolo12m_pro
 ```
 
-Usar imagen mas grande para placas pequenas:
+Imagen mas grande (`imgsz 960`) para placas pequenas o lejanas:
 
 ```powershell
-.\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --model yolo12s.pt --device auto --batch -1 --workers 8 --imgsz 960 --epochs 50 --patience 10 --name placas_yolo12s_960
+.\.venv\Scripts\python.exe entrenamiento_pro.py `
+  --data license_plate_recognition.yaml `
+  --model yolo12s.pt `
+  --device auto `
+  --batch -1 `
+  --workers 8 `
+  --imgsz 960 `
+  --epochs 50 `
+  --patience 10 `
+  --name placas_yolo12s_960
 ```
 
 ### Si hay error de memoria CUDA
