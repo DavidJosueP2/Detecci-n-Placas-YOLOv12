@@ -8,7 +8,7 @@ from ultralytics import YOLO
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_MODEL_PATH = ROOT / "models" / "best_model.pt"
+DEFAULT_MODEL_PATH = ROOT / "models" / "Best_epoch_2_90mil.pt"
 FALLBACK_MODEL_PATH = ROOT / "Best_epoch_1_90mil.pt"
 OUTPUT_DIR = ROOT / "resultados_individuales"
 BOX_COLOR = (255, 70, 0)

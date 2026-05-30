@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Deteccion de placas vehiculares</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              onest: ['Onest', 'Segoe UI', 'Arial', 'sans-serif'],
+            },
+            colors: {
+              radar: {
+                50: '#eef6ff',
+                100: '#d8ebff',
+                600: '#0b66c3',
+                700: '#084f99',
+                900: '#09233f',
+              },
+            },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body
+    class="min-h-screen bg-white font-onest text-slate-950"
+    style="--video-aspect-ratio: {{ video_aspect_ratio }}; --video-max-width: {{ video_max_width }};"
+  >
+    <header class="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div class="mx-auto flex min-h-[64px] w-[min(1360px,calc(100%-32px))] items-center justify-between gap-5">
+        <div class="flex min-w-0 items-center gap-4">
+          <div class="grid h-10 w-10 shrink-0 place-items-center rounded-[5px] bg-radar-700 text-sm font-semibold text-white">
+            UTA
+          </div>
+          <div class="min-w-0">
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Universidad Técnica de Ambato</p>
+            <h1 class="truncate text-lg font-semibold leading-tight text-slate-950 sm:text-xl">Deteccion de placas vehiculares</h1>
+          </div>
+        </div>
+
+        <div class="flex shrink-0 items-center gap-3">
+          <div class="hidden text-right sm:block">
+            <p class="text-[11px] uppercase tracking-[0.1em] text-slate-500">Fuente activa</p>
+            <p id="sourceValue" class="max-w-[230px] truncate text-sm font-semibold text-slate-900">Camara 0</p>
+          </div>
+          <div class="relative">
+            <button id="sourceButton" class="h-10 rounded-[4px] bg-radar-700 px-4 text-sm font-semibold text-white transition hover:bg-radar-600" type="button" aria-expanded="false">
+              Fuente
+            </button>
+            <div id="sourceMenu" class="source-menu hidden">
+              <button class="source-option" type="button" data-type="camera" data-value="0">Camara 0</button>
+              <button class="source-option" type="button" data-type="video" data-value="video">Video</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="mx-auto w-[min(1360px,calc(100%-32px))] py-6">
+      <section class="workspace-grid">
+        <div class="min-w-0">
+          <section class="overflow-hidden rounded-[6px] border border-slate-300 bg-white">
+            <div class="video-stage bg-slate-950">
+              <img id="videoFrame" class="block h-full w-full bg-slate-950 object-contain" src="{{ url_for('video_feed') }}" alt="Video en tiempo real">
+            </div>
+            <div class="border-t border-slate-800 bg-slate-950 px-4 py-3 text-white">
+              <input id="progressRange" class="w-full accent-radar-600" type="range" min="0" max="0" step="0.1" value="0">
+              <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <button id="backButton" class="h-9 rounded-[4px] border border-slate-700 px-3 text-sm font-semibold text-slate-100 hover:border-radar-600" type="button">-10s</button>
+                  <button id="pauseButton" class="h-9 rounded-[4px] bg-radar-700 px-4 text-sm font-semibold text-white hover:bg-radar-600" type="button">Pausar</button>
+                  <button id="forwardButton" class="h-9 rounded-[4px] border border-slate-700 px-3 text-sm font-semibold text-slate-100 hover:border-radar-600" type="button">+10s</button>
+                </div>
+                <div class="text-sm font-medium text-slate-300">
+                  <span id="currentTime">0:00</span>
+                  <span class="text-slate-600">/</span>
+                  <span id="durationTime">0:00</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <form id="uploadForm" class="drop-zone mt-4 hidden min-h-[54px] w-full cursor-pointer items-center justify-between gap-4 rounded-[5px] border border-dashed border-slate-400 bg-white px-4 py-3 transition hover:border-radar-600 hover:bg-radar-50/60">
+            <input id="videoInput" class="hidden" name="video" type="file" accept="video/*">
+            <div class="min-w-0">
+              <strong class="block text-sm font-semibold text-slate-950">Soltar video</strong>
+              <span id="uploadText" class="block truncate text-xs text-slate-500">seleccionar archivo local</span>
+            </div>
+            <span class="hidden border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 sm:inline-block">MP4</span>
+          </form>
+        </div>
+
+        <aside class="min-w-0 border-y border-slate-200 bg-white py-5 lg:border-y-0 lg:border-l lg:py-1 lg:pl-5">
+          <div class="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Resumen</p>
+              <h2 class="mt-1 text-lg font-semibold text-slate-950">Placas detectadas</h2>
+            </div>
+            <span id="plateCount" class="border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">0</span>
+          </div>
+
+          <div id="platesList" class="grid">
+            <article class="plate-row">
+              <img id="plateCrop" class="plate-thumb" src="{{ url_for('plate_crop') }}" alt="Recorte de placa">
+              <div class="min-w-0 text-sm text-slate-500">Sin placa detectada</div>
+            </article>
+          </div>
+
+          {% if detector_error %}
+          <div class="mt-5 border-l-4 border-red-600 pl-3 text-sm text-red-700">{{ detector_error }}</div>
+          {% endif %}
+          {% if reader_error %}
+          <div class="mt-5 border-l-4 border-amber-500 pl-3 text-sm text-amber-700">{{ reader_error }}</div>
+          {% endif %}
+        </aside>
+      </section>
+    </main>
+
+    <script>
+      const videoFrame = document.getElementById("videoFrame");
+      const plateCount = document.getElementById("plateCount");
+      const platesList = document.getElementById("platesList");
+      const sourceValue = document.getElementById("sourceValue");
+      const uploadForm = document.getElementById("uploadForm");
+      const videoInput = document.getElementById("videoInput");
+      const uploadText = document.getElementById("uploadText");
+      const sourceButton = document.getElementById("sourceButton");
+      const sourceMenu = document.getElementById("sourceMenu");
+      const pauseButton = document.getElementById("pauseButton");
+      const backButton = document.getElementById("backButton");
+      const forwardButton = document.getElementById("forwardButton");
+      const progressRange = document.getElementById("progressRange");
+      const currentTime = document.getElementById("currentTime");
+      const durationTime = document.getElementById("durationTime");
+      let isSeeking = false;
+      let isPaused = false;
+      let statusTimer = null;
+      let lastStatus = null;
+      let sourceMode = "camera";
+
+      function startStatusPolling() {
+        stopStatusPolling();
+        refreshStatus();
+        statusTimer = window.setInterval(refreshStatus, 700);
+      }
+
+      function stopStatusPolling() {
+        if (statusTimer) {
+          window.clearInterval(statusTimer);
+          statusTimer = null;
+        }
+      }
+
+      function restartVideoStream() {
+        videoFrame.src = `/video_feed?t=${Date.now()}`;
+      }
+
+      function freezeVideoFrame() {
+        videoFrame.src = `/current_frame?t=${Date.now()}`;
+      }
+
+      async function sendVideo(file) {
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append("video", file);
+        uploadText.textContent = "Cargando video...";
+        uploadForm.classList.add("is-loading");
+
+        try {
+          const response = await fetch("/upload_video", {
+            method: "POST",
+            body: formData,
+          });
+          const data = await response.json();
+
+          if (!response.ok || !data.ok) {
+            throw new Error(data.error || "No se pudo cargar el video.");
+          }
+
+          isPaused = false;
+          sourceMode = "video";
+          uploadText.textContent = data.filename;
+          sourceValue.textContent = data.filename;
+          pauseButton.textContent = "Pausar";
+          restartVideoStream();
+          startStatusPolling();
+        } catch (error) {
+          uploadText.textContent = error.message;
+        } finally {
+          uploadForm.classList.remove("is-loading");
+          videoInput.value = "";
+        }
+      }
+
+      uploadForm.addEventListener("click", () => videoInput.click());
+      uploadForm.addEventListener("submit", (event) => event.preventDefault());
+      uploadForm.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        uploadForm.classList.add("is-dragging");
+      });
+      uploadForm.addEventListener("dragleave", () => {
+        uploadForm.classList.remove("is-dragging");
+      });
+      uploadForm.addEventListener("drop", (event) => {
+        event.preventDefault();
+        uploadForm.classList.remove("is-dragging");
+        sendVideo(event.dataTransfer.files[0]);
+      });
+      videoInput.addEventListener("change", () => sendVideo(videoInput.files[0]));
+      sourceButton.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        sourceMenu.classList.toggle("hidden");
+        sourceButton.setAttribute("aria-expanded", String(!sourceMenu.classList.contains("hidden")));
+        if (!sourceMenu.dataset.loaded) {
+          await loadSources();
+        }
+      });
+      document.addEventListener("click", () => {
+        sourceMenu.classList.add("hidden");
+        sourceButton.setAttribute("aria-expanded", "false");
+      });
+      sourceMenu.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const option = event.target.closest("[data-type]");
+        if (!option) return;
+        sourceMenu.classList.add("hidden");
+        sourceButton.setAttribute("aria-expanded", "false");
+
+        if (option.dataset.type === "video") {
+          sourceMode = "video";
+          uploadForm.classList.remove("hidden");
+          uploadForm.classList.add("flex");
+          uploadText.textContent = "seleccionar archivo local";
+          sourceValue.textContent = "Video";
+          return;
+        }
+
+        await selectCamera(option.dataset.value, option.textContent.trim());
+      });
+      pauseButton.addEventListener("click", async () => {
+        const response = await fetch("/toggle_pause", { method: "POST" });
+        const data = await response.json();
+        isPaused = data.paused;
+        pauseButton.textContent = isPaused ? "Reanudar" : "Pausar";
+
+        if (isPaused) {
+          freezeVideoFrame();
+          stopStatusPolling();
+          return;
+        }
+
+        restartVideoStream();
+        startStatusPolling();
+      });
+      backButton.addEventListener("click", () => seekRelative(-10));
+      forwardButton.addEventListener("click", () => seekRelative(10));
+      progressRange.addEventListener("pointerdown", () => {
+        isSeeking = true;
+      });
+      progressRange.addEventListener("pointerup", async () => {
+        await seekTo(Number(progressRange.value));
+        isSeeking = false;
+      });
+      progressRange.addEventListener("change", async () => {
+        await seekTo(Number(progressRange.value));
+        isSeeking = false;
+      });
+
+      async function seekRelative(delta) {
+        await fetch("/seek", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ delta }),
+        });
+        if (isPaused) {
+          restartVideoStream();
+          await refreshStatusOnce();
+        }
+      }
+
+      async function seekTo(seconds) {
+        await fetch("/seek", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ seconds }),
+        });
+        if (isPaused) {
+          restartVideoStream();
+          await refreshStatusOnce();
+        }
+      }
+
+      function formatTime(seconds) {
+        if (!seconds || seconds < 0) return "0:00";
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60).toString().padStart(2, "0");
+        return `${mins}:${secs}`;
+      }
+
+      function renderPlates(detections) {
+        if (!detections.length) {
+          plateCount.textContent = "0";
+          platesList.innerHTML = `
+            <article class="plate-row">
+              <img class="plate-thumb" src="/plate_crop?t=${Date.now()}" alt="Recorte de placa">
+              <div class="min-w-0 text-sm text-slate-500">Sin placa detectada</div>
+            </article>
+          `;
+          return;
+        }
+
+        plateCount.textContent = detections.length;
+        platesList.innerHTML = detections.map((item) => `
+          <article class="plate-row">
+            <img class="plate-thumb" src="/plate_crop/${item.index}?t=${Date.now()}" alt="Recorte de placa">
+            <div class="grid min-w-0 gap-1 text-sm">
+              <div><span class="text-slate-500">Placa:</span> <strong class="text-slate-900">${item.plate_text || "Leyendo placa"}</strong></div>
+              <div><span class="text-slate-500">Velocidad:</span> <strong class="text-slate-900">${item.speed_kmh == null ? "--" : item.speed_kmh.toFixed(1) + " km/h"}</strong></div>
+              <div><span class="text-slate-500">Confianza placa:</span> <strong class="text-radar-700">${item.confidence ? (item.confidence * 100).toFixed(1) + "%" : "--"}</strong></div>
+            </div>
+          </article>
+        `).join("");
+      }
+
+      async function loadSources() {
+        try {
+          const response = await fetch("/sources", { cache: "no-store" });
+          const data = await response.json();
+          if (!data.ok) return;
+
+          sourceMenu.innerHTML = data.sources.map((source) => (
+            `<button class="source-option" type="button" data-type="${source.type}" data-value="${source.value}">${source.label}</button>`
+          )).join("");
+          sourceMenu.dataset.loaded = "true";
+        } catch (error) {
+          sourceMenu.innerHTML = `
+            <button class="source-option" type="button" data-type="camera" data-value="0">Camara 0</button>
+            <button class="source-option" type="button" data-type="video" data-value="video">Video</button>
+          `;
+        }
+      }
+
+      async function selectCamera(source, label) {
+        await fetch("/use_camera", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source }),
+        });
+        sourceMode = "camera";
+        isPaused = false;
+        uploadForm.classList.add("hidden");
+        uploadForm.classList.remove("flex");
+        uploadText.textContent = "seleccionar archivo local";
+        sourceValue.textContent = label || `Camara ${source}`;
+        pauseButton.textContent = "Pausar";
+        restartVideoStream();
+        startStatusPolling();
+      }
+
+      async function refreshStatusOnce() {
+        try {
+          const response = await fetch("/status", { cache: "no-store" });
+          const data = await response.json();
+          updateStatus(data);
+          return data;
+        } catch (error) {
+          return null;
+        }
+      }
+
+      async function refreshStatus() {
+        if (isPaused) return;
+        await refreshStatusOnce();
+      }
+
+      function updateStatus(data) {
+        if (!data) return;
+        lastStatus = data;
+        isPaused = data.paused;
+        pauseButton.textContent = data.paused ? "Reanudar" : "Pausar";
+        progressRange.max = data.duration_seconds || 0;
+        if (!isSeeking) {
+          progressRange.value = data.position_seconds || 0;
+        }
+        currentTime.textContent = formatTime(data.position_seconds);
+        durationTime.textContent = formatTime(data.duration_seconds);
+        backButton.disabled = !data.is_seekable;
+        forwardButton.disabled = !data.is_seekable;
+        progressRange.disabled = !data.is_seekable;
+        sourceValue.textContent = data.source || sourceValue.textContent;
+        renderPlates(data.detections || []);
+      }
+
+      startStatusPolling();
+    </script>
+  </body>
+</html>

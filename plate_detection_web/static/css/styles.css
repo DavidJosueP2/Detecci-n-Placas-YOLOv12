@@ -1,0 +1,125 @@
+@font-face {
+  font-family: "Onest";
+  src: url("../fonts/Onest web/Onest-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Onest";
+  src: url("../fonts/Onest web/Onest-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Onest";
+  src: url("../fonts/Onest web/Onest-SemiBold.woff2") format("woff2");
+  font-weight: 650;
+  font-style: normal;
+  font-display: swap;
+}
+
+.drop-zone.is-dragging,
+.drop-zone.is-loading {
+  border-color: #0b66c3;
+  background: #eef6ff;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, var(--video-max-width)) minmax(360px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.video-stage {
+  aspect-ratio: var(--video-aspect-ratio);
+  width: min(100%, var(--video-max-width));
+  margin-inline: auto;
+}
+
+.plate-row {
+  border-top: 1px solid #e2e8f0;
+  padding: 14px 0;
+  background: #ffffff;
+}
+
+.plate-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.plate-row:last-child {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.plate-thumb {
+  width: 148px;
+  height: 92px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 0;
+  object-fit: contain;
+  background: #ffffff;
+}
+
+.source-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 50;
+  width: 184px;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  background: #ffffff;
+}
+
+.source-option {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.source-option + .source-option {
+  border-top: 1px solid #e2e8f0;
+}
+
+.source-option:hover {
+  background: #eef6ff;
+  color: #084f99;
+}
+
+button:disabled,
+input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1080px) {
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .video-stage {
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .plate-row {
+    flex-direction: column;
+  }
+
+  .plate-thumb {
+    width: 100%;
+    height: 120px;
+  }
+}

@@ -43,4 +43,22 @@ mlruns/
 !*.pt
 !modelos/**/*.pt
 
+# Modelos grandes (>100 MB) que GitHub rechaza
 models/lp_yolo11x_morsetech.pt
+plate_detection_web/models/lp_yolo11x_morsetech.pt
+plate_detection_web/models/Charcter-LP.pt
+
+# last.pt no es necesario, best.pt es suficiente
+**/weights/last.pt
+
+# Resultados de evaluacion / entrenamiento local
+resultados_evaluacion/
+resultados_individuales/
+outputs_yolo11_license_plate/
+outputs_yolo12_pro/
+
+# Videos pesados
+*.mp4
+
+# Capturas generadas por la web
+plate_detection_web/static/captures/*.mp4

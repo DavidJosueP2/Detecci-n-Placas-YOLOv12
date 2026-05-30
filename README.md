@@ -183,6 +183,22 @@ Usa el `last.pt` como modelo inicial y guarda el resultado en un experimento nue
 
 Esto no reanuda el optimizador anterior, pero si reutiliza los pesos ya aprendidos.
 
+## Evaluar modelos
+
+Evalua todos los modelos de la carpeta `models/` contra los datasets de validacion. Los resultados quedan en `resultados_evaluacion/`.
+
+Contra Placas Ecuador (46 imagenes, rapido):
+
+```powershell
+& ".venv\Scripts\python.exe" evaluar_modelos.py --modelos "90mil_10 epocas" lp_yolo11x_morsetech best_placas_ecuador best_model placas_ecuador_pro_300img Best_300img_limitado --dataset ecuador --batch 2
+```
+
+Contra License Plate Recognition (2039 imagenes, tarda mas):
+
+```powershell
+& ".venv\Scripts\python.exe" evaluar_modelos.py --modelos "90mil_10 epocas" lp_yolo11x_morsetech best_placas_ecuador best_model placas_ecuador_pro_300img Best_300img_limitado --dataset lpr --batch 2
+```
+
 ## Modelos
 
 Los checkpoints `.pt` si pueden versionarse si pesan menos de 100 MB. Si alguno supera ese limite, usar Git LFS o subirlo como release asset.
