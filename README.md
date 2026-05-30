@@ -145,9 +145,43 @@ Si sigue fallando:
 
 ### Reanudar entrenamiento interrumpido
 
+Para continuar el experimento principal, usa:
+
 ```powershell
 .\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --resume
 ```
+
+Ese comando reanuda desde:
+
+```text
+modelos/placas_yolo12_pro/weights/last.pt
+```
+
+Si el experimento tiene otro nombre, pasa el mismo `--name` que usaste al entrenar:
+
+```powershell
+.\.venv\Scripts\python.exe entrenamiento_pro.py --data license_plate_recognition.yaml --resume --name placas_yolo12m_pro
+```
+
+### Continuar en otra PC con mejor configuracion
+
+Si quieres conservar lo aprendido pero cambiar recursos como `batch`, `workers` o `imgsz`, no uses `--resume`.
+Usa el `last.pt` como modelo inicial y guarda el resultado en un experimento nuevo:
+
+```powershell
+.\.venv\Scripts\python.exe entrenamiento_pro.py `
+  --data license_plate_recognition.yaml `
+  --model "modelos\placas_yolo12_pro\weights\last.pt" `
+  --device auto `
+  --batch -1 `
+  --workers 8 `
+  --imgsz 768 `
+  --epochs 50 `
+  --patience 10 `
+  --name placas_yolo12_pro_pc_potente
+```
+
+Esto no reanuda el optimizador anterior, pero si reutiliza los pesos ya aprendidos.
 
 ## Modelos
 

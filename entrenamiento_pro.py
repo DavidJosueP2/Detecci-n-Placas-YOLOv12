@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument("--cache", default=False, help="False, ram o disk. Para 90k suele convenir disk.")
     parser.add_argument("--fraction", type=float, default=1.0, help="Fraccion del train a usar. 0.01 sirve para smoke test.")
     parser.add_argument("--multi-scale", type=float, default=0.0, help="Rango multi-scale. 0 es mas estable en GPU pequena.")
-    parser.add_argument("--resume", action="store_true", help="Continuar un entrenamiento interrumpido.")
+    parser.add_argument("--resume", action="store_true", help="Continuar desde modelos/<name>/weights/last.pt.")
     parser.add_argument("--sin-augment", action="store_true", help="Desactiva aumentacion para comparar.")
     parser.add_argument("--quick", action="store_true", help="Prueba rapida de 1 epoca.")
     return parser.parse_args()
@@ -71,14 +71,21 @@ def main():
     augmentacion = {} if args.sin_augment else AUGMENTACION_PLACAS_PRO
 
     print(f"Dataset: {data_yaml}")
-    print(f"Modelo base preentrenado: {args.model}")
+    resume_path = MODELOS_DIR / args.name / "weights" / "last.pt"
+    model_source = resume_path if args.resume else args.model
+
+    if args.resume and not resume_path.exists():
+        print(f"No existe checkpoint para reanudar: {resume_path}")
+        return 1
+
+    print(f"Modelo: {model_source}")
     print(f"Dispositivo: {device}")
     print(f"Epocas: {epochs}")
     print(f"Batch: {args.batch}")
     print(f"Fraccion train: {args.fraction}")
     print("Aumentacion:", "desactivada" if args.sin_augment else augmentacion)
 
-    modelo = YOLO(args.model)
+    modelo = YOLO(str(model_source))
     modelo.train(
         data=str(data_yaml),
         epochs=epochs,
@@ -91,7 +98,7 @@ def main():
         project=str(MODELOS_DIR),
         name=args.name,
         exist_ok=True,
-        resume=args.resume,
+        resume=True if args.resume else False,
         seed=42,
         deterministic=False,
         optimizer="AdamW",

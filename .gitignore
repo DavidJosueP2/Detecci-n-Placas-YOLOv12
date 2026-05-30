@@ -43,3 +43,4 @@ mlruns/
 !*.pt
 !modelos/**/*.pt
 
+models/lp_yolo11x_morsetech.pt

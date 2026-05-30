@@ -8,11 +8,11 @@ from ultralytics import YOLO
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_MODEL_PATH = ROOT / "modelos" / "placas_yolo12_scratch" / "weights" / "best.pt"
-FALLBACK_MODEL_PATH = ROOT / "best_placas_ecuador.pt"
+DEFAULT_MODEL_PATH = ROOT / "models" / "best_model.pt"
+FALLBACK_MODEL_PATH = ROOT / "Best_epoch_1_90mil.pt"
 OUTPUT_DIR = ROOT / "resultados_individuales"
-HIGHLIGHT_COLOR = (0, 255, 255)
-HIGHLIGHT_ALPHA = 0.28
+BOX_COLOR = (255, 70, 0)
+TEXT_COLOR = (255, 255, 255)
 
 
 def clamp(value, low, high):
@@ -122,41 +122,57 @@ def find_plate_mask(image, x1, y1, x2, y2):
     return full_mask
 
 
-def draw_highlight(image_path, result, output_path):
+def draw_detection_style(image_path, result, output_path):
     image = cv2.imread(str(image_path))
     if image is None:
         return False
 
-    overlay = image.copy()
-    highlight_mask = image[:, :, 0] * 0
+    image_height, image_width = image.shape[:2]
+    base_size = min(image_width, image_height)
+    thickness = max(2, min(4, round(base_size / 420)))
+    font_scale = max(0.45, min(0.75, base_size / 1050))
+    font_thickness = max(1, thickness - 1)
+    padding = max(3, thickness + 2)
 
     for box in result.boxes:
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
         cls_id = int(box.cls[0])
         conf = float(box.conf[0])
         name = result.names.get(cls_id, str(cls_id))
-        label = f"{name} {conf:.2f}"
+        label = f"{str(name).replace('_', ' ')} {conf:.2f}"
 
-        plate_mask = find_plate_mask(image, x1, y1, x2, y2)
-        if plate_mask is not None:
-            highlight_mask = cv2.bitwise_or(highlight_mask, plate_mask)
+        x1 = clamp(x1, 0, image_width - 1)
+        x2 = clamp(x2, 0, image_width - 1)
+        y1 = clamp(y1, 0, image_height - 1)
+        y2 = clamp(y2, 0, image_height - 1)
 
-        cv2.rectangle(image, (x1, y1), (x2, y2), HIGHLIGHT_COLOR, 2)
+        cv2.rectangle(image, (x1, y1), (x2, y2), BOX_COLOR, thickness)
 
-        label_y = max(y1 - 8, 18)
+        (text_w, text_h), baseline = cv2.getTextSize(
+            label,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            font_thickness,
+        )
+        label_x1 = x1
+        label_y1 = y1 - text_h - baseline - padding * 2
+        if label_y1 < 0:
+            label_y1 = y1
+
+        label_x2 = min(label_x1 + text_w + padding * 2, image_width - 1)
+        label_y2 = min(label_y1 + text_h + baseline + padding * 2, image_height - 1)
+        cv2.rectangle(image, (label_x1, label_y1), (label_x2, label_y2), BOX_COLOR, -1)
         cv2.putText(
             image,
             label,
-            (x1, label_y),
+            (label_x1 + padding, label_y2 - baseline - padding),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            HIGHLIGHT_COLOR,
-            2,
+            font_scale,
+            TEXT_COLOR,
+            font_thickness,
             cv2.LINE_AA,
         )
 
-    overlay[highlight_mask > 0] = HIGHLIGHT_COLOR
-    image = cv2.addWeighted(overlay, HIGHLIGHT_ALPHA, image, 1 - HIGHLIGHT_ALPHA, 0)
     cv2.imwrite(str(output_path), image)
     return True
 
@@ -204,7 +220,7 @@ def main():
     final_file = OUTPUT_DIR / f"{image_path.stem}_detectado{image_path.suffix}"
 
     OUTPUT_DIR.mkdir(exist_ok=True)
-    if draw_highlight(image_path, results[0], final_file):
+    if draw_detection_style(image_path, results[0], final_file):
         print(f"Resultado guardado en: {final_file}")
         open_image(str(final_file))
     else:

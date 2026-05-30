@@ -1,12 +1,13 @@
 task: detect
 mode: train
-model: yolo12s.pt
+model: D:\Seventh Semester\Inteligencia Arificial\Proyecto Foto Radar\Detección Placas
+  YOLO\modelos\placas_yolo12_pro\weights\last.pt
 data: D:\Seventh Semester\Inteligencia Arificial\Proyecto Foto Radar\Detección Placas
   YOLO\license_plate_recognition.yaml
 epochs: 50
 time: null
 patience: 10
-batch: 4
+batch: 2
 imgsz: 640
 save: true
 save_period: -1
@@ -26,7 +27,8 @@ single_cls: false
 rect: false
 cos_lr: true
 close_mosaic: 10
-resume: false
+resume: D:\Seventh Semester\Inteligencia Arificial\Proyecto Foto Radar\Detección Placas
+  YOLO\modelos\placas_yolo12_pro\weights\last.pt
 amp: true
 fraction: 1.0
 profile: false
