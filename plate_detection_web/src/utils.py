@@ -18,6 +18,7 @@ def detection_status(detection):
             "plate_text_confidence": 0.0,
             "characters": [],
             "speed_kmh": None,
+            "speed_status": "esperando cruce",
             "message": "Sin deteccion",
             "timestamp": now_label(),
         }
@@ -33,6 +34,7 @@ def detection_status(detection):
         "plate_text_confidence": detection.get("plate_text_confidence", 0.0),
         "characters": detection.get("characters", []),
         "speed_kmh": detection.get("speed_kmh"),
+        "speed_status": detection.get("speed_status", "esperando cruce"),
         "message": "Placa detectada",
         "timestamp": now_label(),
     }

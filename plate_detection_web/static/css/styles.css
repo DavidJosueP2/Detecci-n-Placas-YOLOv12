@@ -41,6 +41,13 @@
   margin-inline: auto;
 }
 
+.info-panel {
+  border: 1px solid #dbe3ee;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 18px;
+}
+
 .plate-row {
   border-top: 1px solid #e2e8f0;
   padding: 14px 0;

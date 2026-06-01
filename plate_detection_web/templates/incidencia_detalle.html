@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Incidencia {{ incident.plate_text }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    {% include "_tailwind_config.html" %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body class="min-h-screen bg-white font-onest text-slate-950">
+    {% include "_topbar.html" %}
+
+    <main class="mx-auto grid w-[min(1360px,calc(100%-32px))] gap-6 py-6">
+      <div>
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Detalle de incidencia</p>
+        <h2 class="mt-1 text-xl font-semibold">{{ incident.plate_text }} · {{ incident.risk_label }}</h2>
+      </div>
+      <section class="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <div class="grid gap-4">
+          <img class="w-full border border-slate-200 object-contain" src="{{ url_for('static', filename=incident.frame_path) }}" alt="Frame principal">
+          {% if incident.clip_path %}
+          <video class="w-full border border-slate-200" controls src="{{ url_for('static', filename=incident.clip_path) }}"></video>
+          {% endif %}
+        </div>
+
+        <aside class="grid content-start gap-4 border border-slate-200 p-4">
+          <img class="h-32 w-full object-contain" src="{{ url_for('static', filename=incident.crop_path) }}" alt="Recorte de placa">
+          <dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+            <dt class="text-slate-500">Fecha/hora</dt><dd class="font-semibold">{{ incident.created_at }}</dd>
+            <dt class="text-slate-500">Placa</dt><dd class="font-semibold">{{ incident.plate_text }}</dd>
+            <dt class="text-slate-500">Velocidad</dt><dd class="font-semibold">{{ "%.1f"|format(incident.speed_kmh) }} km/h</dd>
+            <dt class="text-slate-500">Riesgo</dt><dd class="font-semibold text-red-700">{{ incident.risk_label }}</dd>
+            <dt class="text-slate-500">Penalizacion</dt><dd class="font-semibold">{{ "%.2f"|format(incident.penalty_hours) }} h</dd>
+            <dt class="text-slate-500">Confianza</dt><dd class="font-semibold">{{ "%.1f"|format(incident.detection_confidence * 100) }}%</dd>
+            <dt class="text-slate-500">Marca</dt><dd class="font-semibold">{{ incident.vehicle.brand }}</dd>
+            <dt class="text-slate-500">Modelo</dt><dd class="font-semibold">{{ incident.vehicle.model }}</dd>
+            <dt class="text-slate-500">Color</dt><dd class="font-semibold">{{ incident.vehicle.color }}</dd>
+          </dl>
+          <div>
+            <p class="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Caracteres</p>
+            <div class="flex flex-wrap gap-1.5">
+              {% for char in incident.characters %}
+              <span class="border border-slate-200 bg-slate-50 px-2 py-1 text-xs"><strong>{{ char.value }}</strong> {{ "%.1f"|format(char.confidence * 100) }}%</span>
+              {% else %}
+              <span class="text-sm text-slate-500">Sin caracteres individuales.</span>
+              {% endfor %}
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="border border-slate-200 p-4">
+        <h2 class="text-lg font-semibold">Explicacion Mamdani tipo 1</h2>
+        <p class="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+          Con una velocidad de {{ "%.1f"|format(incident.speed_kmh) }} km/h, el vehiculo tiene pertenencia en los conjuntos indicados abajo. Se activaron las reglas listadas, la salida agregada produjo un centroide de {{ "%.2f"|format(incident.fuzzy.centroid) }} horas y la penalizacion administrativa interna propuesta es {{ "%.2f"|format(incident.penalty_hours) }} horas.
+        </p>
+
+        <div class="mt-5 grid gap-5 lg:grid-cols-2">
+          <div>
+            <h3 class="mb-2 text-sm font-semibold">Grados de pertenencia</h3>
+            <table class="w-full border-collapse text-sm">
+              {% for name, value in incident.fuzzy.input_memberships.items() %}
+              <tr>
+                <td class="border-b border-slate-100 py-2 text-slate-500">{{ name }}</td>
+                <td class="border-b border-slate-100 py-2 text-right font-semibold">{{ "%.3f"|format(value) }}</td>
+              </tr>
+              {% endfor %}
+            </table>
+          </div>
+          <div>
+            <h3 class="mb-2 text-sm font-semibold">Reglas activadas</h3>
+            <table class="w-full border-collapse text-sm">
+              {% for rule in incident.active_rules %}
+              <tr>
+                <td class="border-b border-slate-100 py-2 font-semibold">{{ rule.id }}</td>
+                <td class="border-b border-slate-100 py-2">Si {{ rule.antecedent }}, entonces {{ rule.consequent }}</td>
+                <td class="border-b border-slate-100 py-2 text-right">{{ "%.3f"|format(rule.activation) }}</td>
+              </tr>
+              {% else %}
+              <tr><td class="py-2 text-slate-500" colspan="3">Sin reglas activadas.</td></tr>
+              {% endfor %}
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid gap-4 lg:grid-cols-3">
+        <img class="w-full border border-slate-200" src="{{ url_for('static', filename=incident.graph_input_path) }}" alt="Grafica de entrada">
+        <img class="w-full border border-slate-200" src="{{ url_for('static', filename=incident.graph_output_path) }}" alt="Grafica de salida">
+        <img class="w-full border border-slate-200" src="{{ url_for('static', filename=incident.graph_aggregation_path) }}" alt="Agregacion y centroide">
+      </section>
+    </main>
+  </body>
+</html>

@@ -6,12 +6,18 @@ from werkzeug.utils import secure_filename
 
 from config import Config
 from src.detector import PlateDetector
+from src.incident_service import IncidentService
 from src.plate_reader import PlateReader
 from src.video_stream import VideoStream
 
 
 app = Flask(__name__)
 Config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+incident_service = IncidentService(
+    db_path=Config.INCIDENT_DB_PATH,
+    static_dir=Config.STATIC_DIR,
+    cooldown_seconds=Config.INCIDENT_COOLDOWN_SECONDS,
+)
 
 detector_error = None
 reader_error = None
@@ -34,6 +40,7 @@ try:
         confidence_threshold=Config.CHARACTER_CONFIDENCE_THRESHOLD,
         image_size=Config.CHARACTER_IMAGE_SIZE,
         device=Config.DEVICE,
+        max_variants=Config.OCR_VARIANTS,
     )
 except Exception as exc:
     plate_reader = None
@@ -43,8 +50,27 @@ stream = VideoStream(
     detector=detector,
     plate_reader=plate_reader,
     source=Config.VIDEO_SOURCE,
-    pixels_per_meter=Config.SPEED_PIXELS_PER_METER,
-    speed_smoothing=Config.SPEED_SMOOTHING,
+    speed_line_a_y=Config.SPEED_LINE_A_Y,
+    speed_line_b_y=Config.SPEED_LINE_B_Y,
+    speed_line_a_right_y=Config.SPEED_LINE_A_RIGHT_Y,
+    speed_line_b_right_y=Config.SPEED_LINE_B_RIGHT_Y,
+    speed_roi_x1=Config.SPEED_ROI_X1,
+    speed_roi_x2=Config.SPEED_ROI_X2,
+    speed_distance_meters=Config.SPEED_DISTANCE_METERS,
+    speed_direction=Config.SPEED_DIRECTION,
+    speed_line_hysteresis_px=Config.SPEED_LINE_HYSTERESIS_PX,
+    speed_min_travel_time=Config.SPEED_MIN_TRAVEL_TIME,
+    speed_max_travel_time=Config.SPEED_MAX_TRAVEL_TIME,
+    speed_min_movement_px=Config.SPEED_MIN_MOVEMENT_PX,
+    speed_min_partial_progress=Config.SPEED_MIN_PARTIAL_PROGRESS,
+    target_fps=Config.STREAM_TARGET_FPS,
+    stream_max_width=Config.STREAM_MAX_WIDTH,
+    detection_every_n_frames=Config.DETECTION_EVERY_N_FRAMES,
+    ocr_interval_seconds=Config.OCR_INTERVAL_SECONDS,
+    ocr_retry_interval_seconds=Config.OCR_RETRY_INTERVAL_SECONDS,
+    ocr_max_plates_per_frame=Config.OCR_MAX_PLATES_PER_FRAME,
+    ocr_min_detection_confidence=Config.OCR_MIN_DETECTION_CONFIDENCE,
+    incident_service=incident_service,
     detector_error=detector_error or reader_error,
 )
 
@@ -52,11 +78,17 @@ stream = VideoStream(
 def available_camera_sources():
     configured_source = Config.VIDEO_SOURCE if isinstance(Config.VIDEO_SOURCE, int) else 0
     cameras = []
+    backends = (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY)
 
     for index in range(Config.CAMERA_SCAN_LIMIT):
-        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        opened = capture.isOpened()
-        capture.release()
+        opened = False
+        for backend in backends:
+            capture = cv2.VideoCapture(index, backend)
+            opened = capture.isOpened()
+            capture.release()
+            if opened:
+                break
+
         if opened or index == configured_source:
             cameras.append({"type": "camera", "value": index, "label": f"Camara {index}"})
 
@@ -74,7 +106,25 @@ def index():
         reader_error=reader_error,
         video_aspect_ratio=Config.VIDEO_ASPECT_RATIO,
         video_max_width=Config.VIDEO_MAX_WIDTH,
+        active_page="foto_radar",
     )
+
+
+@app.route("/incidencias")
+def incidencias():
+    return render_template(
+        "incidencias.html",
+        incidents=incident_service.list_incidents(),
+        active_page="incidencias",
+    )
+
+
+@app.route("/incidencias/<incident_id>")
+def incidencia_detalle(incident_id):
+    incident = incident_service.get_incident(incident_id)
+    if incident is None:
+        return render_template("incidencia_no_encontrada.html", active_page="incidencias"), 404
+    return render_template("incidencia_detalle.html", incident=incident, active_page="incidencias")
 
 
 @app.route("/video_feed")

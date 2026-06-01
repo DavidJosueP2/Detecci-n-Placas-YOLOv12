@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
 import cv2
@@ -8,6 +9,7 @@ from src.frame_processor import (
     placeholder_crop,
     placeholder_frame,
     process_frame,
+    resize_to_max_width,
 )
 from src.speed_estimator import SpeedEstimator
 from src.utils import detection_status, now_label
@@ -19,8 +21,27 @@ class VideoStream:
         detector,
         plate_reader=None,
         source=0,
-        pixels_per_meter=45.0,
-        speed_smoothing=0.35,
+        speed_line_a_y=0.45,
+        speed_line_b_y=0.70,
+        speed_line_a_right_y=None,
+        speed_line_b_right_y=None,
+        speed_roi_x1=0.0,
+        speed_roi_x2=1.0,
+        speed_distance_meters=5.0,
+        speed_direction="both",
+        speed_line_hysteresis_px=8.0,
+        speed_min_travel_time=0.15,
+        speed_max_travel_time=8.0,
+        speed_min_movement_px=35.0,
+        speed_min_partial_progress=0.35,
+        target_fps=12.0,
+        stream_max_width=960,
+        detection_every_n_frames=6,
+        ocr_interval_seconds=1.25,
+        ocr_retry_interval_seconds=0.30,
+        ocr_max_plates_per_frame=1,
+        ocr_min_detection_confidence=0.20,
+        incident_service=None,
         detector_error=None,
     ):
         self.detector = detector
@@ -29,12 +50,42 @@ class VideoStream:
         self.source_label = str(source)
         self.source_version = 0
         self.detector_error = detector_error
+        self.target_fps = max(1.0, float(target_fps))
+        self.stream_max_width = max(0, int(stream_max_width))
+        self.detection_every_n_frames = max(1, int(detection_every_n_frames))
+        self.ocr_interval_seconds = max(0.0, float(ocr_interval_seconds))
+        self.ocr_retry_interval_seconds = max(0.0, float(ocr_retry_interval_seconds))
+        self.ocr_max_plates_per_frame = max(0, int(ocr_max_plates_per_frame))
+        self.ocr_min_detection_confidence = max(0.0, float(ocr_min_detection_confidence))
+        self.incident_service = incident_service
+        self.source_fps = 0.0
+        self.display_fps = 0.0
+        self.detector_ms = 0.0
+        self.last_frame_started_at = 0.0
         self.lock = Lock()
         self.speed_estimator = SpeedEstimator(
-            pixels_per_meter=pixels_per_meter,
-            smoothing=speed_smoothing,
+            line_a_y=speed_line_a_y,
+            line_b_y=speed_line_b_y,
+            line_a_right_y=speed_line_a_right_y,
+            line_b_right_y=speed_line_b_right_y,
+            roi_x1=speed_roi_x1,
+            roi_x2=speed_roi_x2,
+            distance_meters=speed_distance_meters,
+            direction=speed_direction,
+            hysteresis_px=speed_line_hysteresis_px,
+            min_travel_time=speed_min_travel_time,
+            max_travel_time=speed_max_travel_time,
+            min_movement_px=speed_min_movement_px,
+            min_partial_progress=speed_min_partial_progress,
         )
         self.plate_memory = {}
+        self.last_detections = []
+        self.lightweight_tracks = {}
+        self.next_track_id = 1
+        self.ocr_executor = ThreadPoolExecutor(max_workers=1)
+        self.pending_ocr = {}
+        self.last_ocr_attempts = {}
+        self.last_ocr_attempt_at = 0.0
         self.last_crop = encode_jpeg(placeholder_crop())
         self.crop_slots = [self.last_crop]
         self.last_frame = encode_jpeg(placeholder_frame("Esperando video"))
@@ -70,6 +121,8 @@ class VideoStream:
         capture, capture_version, source = self._open_capture()
         self._update_capture_info(capture, source)
         self._restore_video_position(capture, source)
+        last_emit_time = 0.0
+        frame_index = 0
         if not capture.isOpened():
             message = f"No se pudo abrir la fuente de video: {source}"
             with self.lock:
@@ -85,6 +138,7 @@ class VideoStream:
                 time.sleep(1)
 
         while True:
+            frame_started_at = time.monotonic()
             with self.lock:
                 source_changed = capture_version != self.source_version
 
@@ -93,6 +147,8 @@ class VideoStream:
                 capture, capture_version, source = self._open_capture()
                 self._update_capture_info(capture, source)
                 self._restore_video_position(capture, source)
+                last_emit_time = 0.0
+                frame_index = 0
                 if not capture.isOpened():
                     message = f"No se pudo abrir la fuente de video: {source}"
                     yield self._multipart_frame(placeholder_frame(message))
@@ -109,6 +165,14 @@ class VideoStream:
                 seek_to = max(0.0, min(seek_request_seconds, self.duration_seconds or seek_request_seconds))
                 capture.set(cv2.CAP_PROP_POS_MSEC, seek_to * 1000)
                 self.speed_estimator.reset()
+                self.last_ocr_attempts.clear()
+                self.last_ocr_attempt_at = 0.0
+                self.last_detections = []
+                self.lightweight_tracks.clear()
+                self.next_track_id = 1
+                self.pending_ocr.clear()
+                last_emit_time = 0.0
+                frame_index = 0
                 paused = False
 
             if paused:
@@ -121,6 +185,16 @@ class VideoStream:
             if not ok:
                 if isinstance(source, str):
                     capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self.speed_estimator.reset()
+                    self.plate_memory.clear()
+                    self.last_ocr_attempts.clear()
+                    self.last_ocr_attempt_at = 0.0
+                    self.last_detections = []
+                    self.lightweight_tracks.clear()
+                    self.next_track_id = 1
+                    self.pending_ocr.clear()
+                    last_emit_time = 0.0
+                    frame_index = 0
                     time.sleep(0.1)
                     continue
                 time.sleep(0.1)
@@ -130,10 +204,29 @@ class VideoStream:
             display_position = timestamp if isinstance(source, str) else 0.0
             with self.lock:
                 self.position_seconds = display_position
-            detections = self.detector.track(frame)
-            detections = self._enrich_detections(frame, detections, timestamp)
-            processed, crops, best_detection = process_frame(frame, detections)
-            frame_bytes = encode_jpeg(processed)
+            run_detection = self._should_detect_this_frame(source, frame_index)
+            if run_detection:
+                detector_started_at = time.monotonic()
+                detections = self._detect_frame(frame, source, timestamp)
+                self.detector_ms = (time.monotonic() - detector_started_at) * 1000
+                detections = self._enrich_detections(frame, detections, timestamp)
+                self.last_detections = detections
+            else:
+                self._collect_ocr_results()
+                detections = [dict(item) for item in self.last_detections]
+                for detection in detections:
+                    self._apply_cached_plate_text(detection)
+            speed_lines = self.speed_estimator.lines_for_frame(frame.shape)
+            stats_detection = self._best_detection_for_stats(detections)
+            processed, crops, best_detection = process_frame(
+                frame,
+                detections,
+                speed_lines=speed_lines,
+                stats=self._frame_stats(detections, stats_detection),
+            )
+            output_frame = resize_to_max_width(processed, self.stream_max_width)
+            frame_bytes = encode_jpeg(output_frame)
+            encoded_crop_items = self._prepare_crop_items(crops[:6], frame_bytes)
 
             with self.lock:
                 self.status = detection_status(best_detection)
@@ -142,13 +235,13 @@ class VideoStream:
                 self.status["position_seconds"] = self.position_seconds
                 self.status["duration_seconds"] = self.duration_seconds
                 self.status["is_seekable"] = self.is_seekable
+                self.status["stats"] = self._frame_stats(detections, best_detection)
                 self.status["detections"] = [
                     self._public_detection(item["detection"], index)
-                    for index, item in enumerate(crops[:6])
+                    for index, item in enumerate(encoded_crop_items)
                 ]
-                if crops:
-                    encoded_crops = [encode_jpeg(item["crop"]) for item in crops[:6]]
-                    self.crop_slots = [crop for crop in encoded_crops if crop is not None]
+                if encoded_crop_items:
+                    self.crop_slots = [item["bytes"] for item in encoded_crop_items]
                     self.last_crop = self.crop_slots[0] if self.crop_slots else encode_jpeg(placeholder_crop())
                 else:
                     self.crop_slots = [encode_jpeg(placeholder_crop())]
@@ -157,7 +250,10 @@ class VideoStream:
                     self.last_frame = frame_bytes
 
             if frame_bytes is not None:
+                last_emit_time = self._pace_video_file(source, last_emit_time)
+                self._update_display_fps(frame_started_at)
                 yield self._multipart_payload(frame_bytes)
+            frame_index += 1
 
     def set_source(self, source, source_label=None):
         with self.lock:
@@ -174,6 +270,12 @@ class VideoStream:
             self.is_seekable = isinstance(source, str)
             self.speed_estimator.reset()
             self.plate_memory.clear()
+            self.last_detections = []
+            self.lightweight_tracks.clear()
+            self.next_track_id = 1
+            self.pending_ocr.clear()
+            self.last_ocr_attempts.clear()
+            self.last_ocr_attempt_at = 0.0
             self.status.update(
                 {
                     "detected": False,
@@ -185,6 +287,7 @@ class VideoStream:
                     "plate_text": "",
                     "plate_text_confidence": 0.0,
                     "speed_kmh": None,
+                    "speed_status": "esperando cruce",
                     "paused": self.paused,
                     "position_seconds": self.position_seconds,
                     "duration_seconds": self.duration_seconds,
@@ -255,13 +358,16 @@ class VideoStream:
         with self.lock:
             source = self.source
             version = self.source_version
-        return cv2.VideoCapture(source), version, source
+        capture = cv2.VideoCapture(source)
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return capture, version, source
 
     def _update_capture_info(self, capture, source):
         frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
         fps = capture.get(cv2.CAP_PROP_FPS)
         duration = frame_count / fps if frame_count > 0 and fps > 0 else 0.0
         with self.lock:
+            self.source_fps = fps if fps > 0 else 0.0
             self.duration_seconds = duration if isinstance(source, str) else 0.0
             self.is_seekable = isinstance(source, str) and duration > 0
             self.status["duration_seconds"] = self.duration_seconds
@@ -280,24 +386,194 @@ class VideoStream:
             video_seconds = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
             if video_seconds > 0:
                 return video_seconds
+            fps = self.source_fps or 0.0
+            frame_index = capture.get(cv2.CAP_PROP_POS_FRAMES)
+            if fps > 0 and frame_index > 0:
+                return frame_index / fps
         return time.monotonic()
 
+    def _target_interval_for_source(self, source):
+        if not isinstance(source, str):
+            return 0.0
+
+        fps = self.source_fps or self.target_fps
+        return 1.0 / max(1.0, fps)
+
+    def _pace_video_file(self, source, last_emit_time):
+        if not isinstance(source, str):
+            return time.monotonic()
+
+        interval = self._target_interval_for_source(source)
+        if last_emit_time > 0 and interval > 0:
+            wait_seconds = (last_emit_time + interval) - time.monotonic()
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+
+        return time.monotonic()
+
+    def _update_display_fps(self, frame_started_at):
+        elapsed = max(0.001, time.monotonic() - frame_started_at)
+        fps = 1.0 / elapsed
+        self.display_fps = fps if self.display_fps <= 0 else self.display_fps * 0.8 + fps * 0.2
+
+    def _frame_stats(self, detections, best_detection):
+        speed_status = None
+        if best_detection is not None:
+            speed = best_detection.get("speed_kmh")
+            speed_status = (
+                f"{speed:.1f} km/h"
+                if speed is not None
+                else best_detection.get("speed_status", "sin velocidad")
+            )
+        return {
+            "fps": self.display_fps,
+            "source_fps": self.source_fps,
+            "detector_ms": self.detector_ms,
+            "detections": len(detections or []),
+            "tracks": len(self.lightweight_tracks),
+            "speed_status": speed_status,
+        }
+
+    @staticmethod
+    def _best_detection_for_stats(detections):
+        if not detections:
+            return None
+        tracked = [item for item in detections if item.get("track_id") is not None]
+        candidates = tracked or detections
+        return max(candidates, key=lambda item: item.get("confidence", 0.0))
+
+    def _should_detect_this_frame(self, source, frame_index):
+        if not isinstance(source, str):
+            return True
+
+        return frame_index % self.detection_every_n_frames == 0
+
+    def _detect_frame(self, frame, source, timestamp):
+        if not isinstance(source, str):
+            return self.detector.track(frame)
+
+        detections = self.detector.detect(frame)
+        return self._assign_lightweight_track_ids(detections, timestamp)
+
+    def _assign_lightweight_track_ids(self, detections, timestamp):
+        used_tracks = set()
+        for detection in sorted(
+            detections,
+            key=lambda item: item.get("confidence", 0.0),
+            reverse=True,
+        ):
+            track_id = self._match_lightweight_track(detection, used_tracks)
+            if track_id is None:
+                track_id = self.next_track_id
+                self.next_track_id += 1
+
+            detection["track_id"] = track_id
+            used_tracks.add(track_id)
+            self.lightweight_tracks[track_id] = {
+                "box": self._box_tuple(detection),
+                "center": self._center(detection),
+                "timestamp": timestamp,
+                "seen_at": time.monotonic(),
+            }
+
+        self._prune_lightweight_tracks()
+        return detections
+
+    def _match_lightweight_track(self, detection, used_tracks):
+        best_track_id = None
+        best_score = 0.0
+        box = self._box_tuple(detection)
+        center = self._center(detection)
+        width = max(1.0, box[2] - box[0])
+        height = max(1.0, box[3] - box[1])
+        distance_limit = max(180.0, (width + height) * 2.0)
+
+        for track_id, track in self.lightweight_tracks.items():
+            if track_id in used_tracks:
+                continue
+
+            iou = self._box_iou(box, track["box"])
+            distance = ((center[0] - track["center"][0]) ** 2 + (center[1] - track["center"][1]) ** 2) ** 0.5
+            if iou < 0.02 and distance > distance_limit:
+                continue
+
+            score = iou * 1.4 + max(0.0, 1.0 - distance / distance_limit) * 0.65
+            if score > best_score:
+                best_score = score
+                best_track_id = track_id
+
+        return best_track_id
+
+    def _prune_lightweight_tracks(self):
+        now = time.monotonic()
+        expired = [
+            track_id
+            for track_id, track in self.lightweight_tracks.items()
+            if now - track["seen_at"] > 4.0
+        ]
+        for track_id in expired:
+            self.lightweight_tracks.pop(track_id, None)
+
+    @staticmethod
+    def _box_tuple(detection):
+        return (
+            float(detection["x1"]),
+            float(detection["y1"]),
+            float(detection["x2"]),
+            float(detection["y2"]),
+        )
+
+    @staticmethod
+    def _center(detection):
+        return (
+            (float(detection["x1"]) + float(detection["x2"])) / 2,
+            (float(detection["y1"]) + float(detection["y2"])) / 2,
+        )
+
+    @staticmethod
+    def _box_iou(first, second):
+        x1 = max(first[0], second[0])
+        y1 = max(first[1], second[1])
+        x2 = min(first[2], second[2])
+        y2 = min(first[3], second[3])
+        inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        if inter <= 0:
+            return 0.0
+
+        first_area = max(1.0, first[2] - first[0]) * max(1.0, first[3] - first[1])
+        second_area = max(1.0, second[2] - second[0]) * max(1.0, second[3] - second[1])
+        return inter / (first_area + second_area - inter)
+
     def _enrich_detections(self, frame, detections, timestamp):
+        self._collect_ocr_results()
         enriched = []
+        ocr_candidates = self._ocr_candidate_ids(detections)
+
         for detection in detections:
-            self.speed_estimator.update(detection, timestamp=timestamp)
-            crop = self._crop_detection(frame, detection)
+            self.speed_estimator.update(
+                detection,
+                timestamp=timestamp,
+                frame_shape=frame.shape,
+            )
 
             plate_text = ""
             plate_text_confidence = 0.0
             plate_chars = []
-            if self.plate_reader is not None and crop is not None:
-                plate_text, plate_text_confidence, plate_chars = self.plate_reader.read(crop)
+            cached = self._cached_plate_text(detection)
+            if cached:
+                plate_text = cached["text"]
+                plate_text_confidence = cached["confidence"]
+                plate_chars = cached.get("characters", [])
 
-            plate_text, plate_text_confidence = self._stabilize_plate_text(
+            if id(detection) in ocr_candidates and self._should_run_ocr(detection):
+                crop = self._crop_detection(frame, detection)
+                self._submit_ocr(detection, crop)
+
+            plate_text, plate_text_confidence, plate_chars = self._stabilize_plate_text(
                 detection,
                 plate_text,
                 plate_text_confidence,
+                plate_chars,
             )
             detection["plate_text"] = plate_text
             detection["plate_text_confidence"] = plate_text_confidence
@@ -309,12 +585,125 @@ class VideoStream:
 
         return enriched
 
-    def _stabilize_plate_text(self, detection, text, confidence):
-        track_id = detection.get("track_id")
-        if track_id is None:
-            return text, confidence
+    def _submit_ocr(self, detection, crop):
+        if crop is None or self.plate_reader is None:
+            return
 
-        previous = self.plate_memory.get(track_id)
+        key = self._plate_memory_key(detection)
+        if key in self.pending_ocr:
+            return
+
+        self._mark_ocr_attempt(detection)
+        self.pending_ocr[key] = self.ocr_executor.submit(self.plate_reader.read, crop)
+
+    def _collect_ocr_results(self):
+        completed = [
+            (key, future)
+            for key, future in self.pending_ocr.items()
+            if future.done()
+        ]
+        for key, future in completed:
+            self.pending_ocr.pop(key, None)
+            try:
+                text, confidence, characters = future.result()
+            except Exception:
+                continue
+
+            clean_text = "".join(char for char in text if char.isalnum()).upper()
+            if not clean_text:
+                continue
+
+            previous = self.plate_memory.get(key)
+            if previous and len(clean_text) < len(previous["text"]) and confidence < previous["confidence"]:
+                continue
+
+            self.plate_memory[key] = {
+                "text": clean_text,
+                "confidence": confidence,
+                "characters": [
+                    {"value": char["value"], "confidence": char["confidence"]}
+                    for char in characters
+                ],
+                "seen_at": time.monotonic(),
+            }
+
+    def _apply_cached_plate_text(self, detection):
+        cached = self._cached_plate_text(detection)
+        if not cached:
+            return detection
+
+        detection["plate_text"] = cached["text"]
+        detection["plate_text_confidence"] = cached["confidence"]
+        detection["characters"] = cached.get("characters", [])
+        return detection
+
+    def _ocr_candidate_ids(self, detections):
+        if self.plate_reader is None or self.ocr_max_plates_per_frame <= 0:
+            return set()
+
+        candidates = [
+            item
+            for item in detections
+            if item.get("confidence", 0.0) >= self.ocr_min_detection_confidence
+        ]
+        candidates.sort(
+            key=lambda item: (
+                0 if self._cached_plate_text(item) else 1,
+                item.get("confidence", 0.0),
+            ),
+            reverse=True,
+        )
+        return {id(item) for item in candidates[: self.ocr_max_plates_per_frame]}
+
+    def _should_run_ocr(self, detection):
+        if self.plate_reader is None:
+            return False
+
+        key = self._plate_memory_key(detection)
+        if key in self.pending_ocr:
+            return False
+
+        cached = self.plate_memory.get(key)
+        interval = (
+            self.ocr_interval_seconds
+            if cached and cached.get("text")
+            else self.ocr_retry_interval_seconds
+        )
+        last_attempt = max(
+            self.last_ocr_attempts.get(key, 0.0),
+            self.last_ocr_attempt_at,
+        )
+        return time.monotonic() - last_attempt >= interval
+
+    def _mark_ocr_attempt(self, detection):
+        now = time.monotonic()
+        self.last_ocr_attempt_at = now
+        self.last_ocr_attempts[self._plate_memory_key(detection)] = now
+
+    def _cached_plate_text(self, detection):
+        cached = self.plate_memory.get(self._plate_memory_key(detection))
+        if cached is None:
+            return None
+
+        if time.monotonic() - cached["seen_at"] > 5:
+            return None
+
+        cached["seen_at"] = time.monotonic()
+        return cached
+
+    @staticmethod
+    def _plate_memory_key(detection):
+        track_id = detection.get("track_id")
+        if track_id is not None:
+            return f"track:{track_id}"
+
+        center_x = (detection["x1"] + detection["x2"]) / 2
+        center_y = (detection["y1"] + detection["y2"]) / 2
+        return f"pos:{round(center_x / 80)}:{round(center_y / 80)}"
+
+    def _stabilize_plate_text(self, detection, text, confidence, characters):
+        key = self._plate_memory_key(detection)
+        previous = self.plate_memory.get(key)
         clean_text = "".join(char for char in text if char.isalnum()).upper()
 
         if clean_text and (
@@ -322,17 +711,27 @@ class VideoStream:
             or len(clean_text) > len(previous["text"])
             or confidence >= previous["confidence"]
         ):
-            self.plate_memory[track_id] = {
+            stored_characters = [
+                {"value": char["value"], "confidence": char["confidence"]}
+                for char in characters
+            ]
+            self.plate_memory[key] = {
                 "text": clean_text,
                 "confidence": confidence,
+                "characters": stored_characters,
                 "seen_at": time.monotonic(),
             }
-            return clean_text, confidence
+            return clean_text, confidence, stored_characters
 
         if previous is not None and time.monotonic() - previous["seen_at"] < 5:
-            return previous["text"], previous["confidence"]
+            previous["seen_at"] = time.monotonic()
+            return (
+                previous["text"],
+                previous["confidence"],
+                previous.get("characters", []),
+            )
 
-        return clean_text, confidence
+        return clean_text, confidence, characters
 
     @staticmethod
     def _crop_detection(frame, detection):
@@ -344,6 +743,39 @@ class VideoStream:
         if x2 <= x1 or y2 <= y1:
             return None
         return frame[y1:y2, x1:x2].copy()
+
+    def _prepare_crop_items(self, crops, frame_bytes):
+        prepared = []
+        for item in crops:
+            crop_bytes = encode_jpeg(item["crop"])
+            if crop_bytes is None:
+                continue
+
+            detection = item["detection"]
+            fuzzy_result = self._evaluate_incident(detection, frame_bytes, crop_bytes)
+            if fuzzy_result is not None:
+                detection["fuzzy_result"] = fuzzy_result
+
+            prepared.append(
+                {
+                    "detection": detection,
+                    "bytes": crop_bytes,
+                }
+            )
+        return prepared
+
+    def _evaluate_incident(self, detection, frame_bytes, crop_bytes):
+        if self.incident_service is None or frame_bytes is None:
+            return None
+        try:
+            return self.incident_service.evaluate_detection(
+                detection=detection,
+                frame_bytes=frame_bytes,
+                crop_bytes=crop_bytes,
+                source_label=self.source_label,
+            )
+        except Exception:
+            return None
 
     def _multipart_frame(self, frame):
         frame_bytes = encode_jpeg(frame)
@@ -361,6 +793,8 @@ class VideoStream:
             "plate_text_confidence": detection.get("plate_text_confidence", 0.0),
             "characters": detection.get("characters", []),
             "speed_kmh": detection.get("speed_kmh"),
+            "speed_status": detection.get("speed_status", "esperando cruce"),
+            "fuzzy_result": detection.get("fuzzy_result"),
         }
 
     @staticmethod

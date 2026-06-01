@@ -1,0 +1,25 @@
+{% set active_page = active_page|default('foto_radar') %}
+<header class="sticky top-0 z-30 border-b border-slate-300 bg-white/95 backdrop-blur">
+  <div class="mx-auto flex min-h-[64px] w-[min(1360px,calc(100%-32px))] items-center justify-between gap-5">
+    <div class="flex min-w-0 items-center gap-4">
+      <div class="grid h-10 w-10 shrink-0 place-items-center rounded-[5px] bg-radar-700 text-sm font-semibold text-white">
+        UTA
+      </div>
+      <div class="min-w-0">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Universidad Tecnica de Ambato</p>
+        <h1 class="truncate text-lg font-semibold leading-tight text-slate-950 sm:text-xl">Regularizacion vehicular</h1>
+      </div>
+    </div>
+
+    <nav class="flex shrink-0 items-center gap-4 text-sm font-semibold">
+      <a
+        class="border-b-2 pb-1 transition {% if active_page == 'foto_radar' %}border-radar-700 text-radar-700{% else %}border-transparent text-slate-600 hover:border-radar-600 hover:text-radar-700{% endif %}"
+        href="{{ url_for('index') }}"
+      >Foto radar</a>
+      <a
+        class="border-b-2 pb-1 transition {% if active_page == 'incidencias' %}border-radar-700 text-radar-700{% else %}border-transparent text-slate-600 hover:border-radar-600 hover:text-radar-700{% endif %}"
+        href="{{ url_for('incidencias') }}"
+      >Incidencias</a>
+    </nav>
+  </div>
+</header>

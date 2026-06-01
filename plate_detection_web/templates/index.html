@@ -5,78 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Deteccion de placas vehiculares</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            fontFamily: {
-              onest: ['Onest', 'Segoe UI', 'Arial', 'sans-serif'],
-            },
-            colors: {
-              radar: {
-                50: '#eef6ff',
-                100: '#d8ebff',
-                600: '#0b66c3',
-                700: '#084f99',
-                900: '#09233f',
-              },
-            },
-          },
-        },
-      };
-    </script>
+    {% include "_tailwind_config.html" %}
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
   </head>
   <body
     class="min-h-screen bg-white font-onest text-slate-950"
     style="--video-aspect-ratio: {{ video_aspect_ratio }}; --video-max-width: {{ video_max_width }};"
   >
-    <header class="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-      <div class="mx-auto flex min-h-[64px] w-[min(1360px,calc(100%-32px))] items-center justify-between gap-5">
-        <div class="flex min-w-0 items-center gap-4">
-          <div class="grid h-10 w-10 shrink-0 place-items-center rounded-[5px] bg-radar-700 text-sm font-semibold text-white">
-            UTA
-          </div>
-          <div class="min-w-0">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Universidad Técnica de Ambato</p>
-            <h1 class="truncate text-lg font-semibold leading-tight text-slate-950 sm:text-xl">Deteccion de placas vehiculares</h1>
-          </div>
-        </div>
-
-        <div class="flex shrink-0 items-center gap-3">
-          <div class="hidden text-right sm:block">
-            <p class="text-[11px] uppercase tracking-[0.1em] text-slate-500">Fuente activa</p>
-            <p id="sourceValue" class="max-w-[230px] truncate text-sm font-semibold text-slate-900">Camara 0</p>
-          </div>
-          <div class="relative">
-            <button id="sourceButton" class="h-10 rounded-[4px] bg-radar-700 px-4 text-sm font-semibold text-white transition hover:bg-radar-600" type="button" aria-expanded="false">
-              Fuente
-            </button>
-            <div id="sourceMenu" class="source-menu hidden">
-              <button class="source-option" type="button" data-type="camera" data-value="0">Camara 0</button>
-              <button class="source-option" type="button" data-type="video" data-value="video">Video</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </header>
+    {% include "_topbar.html" %}
 
     <main class="mx-auto w-[min(1360px,calc(100%-32px))] py-6">
       <section class="workspace-grid">
         <div class="min-w-0">
           <section class="overflow-hidden rounded-[6px] border border-slate-300 bg-white">
             <div class="video-stage bg-slate-950">
-              <img id="videoFrame" class="block h-full w-full bg-slate-950 object-contain" src="{{ url_for('video_feed') }}" alt="Video en tiempo real">
+              <img id="videoFrame" class="block h-full w-full cursor-pointer bg-slate-950 object-contain" src="{{ url_for('current_frame') }}" alt="Video en tiempo real">
             </div>
             <div class="border-t border-slate-800 bg-slate-950 px-4 py-3 text-white">
-              <input id="progressRange" class="w-full accent-radar-600" type="range" min="0" max="0" step="0.1" value="0">
-              <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <div class="flex items-center gap-2">
-                  <button id="backButton" class="h-9 rounded-[4px] border border-slate-700 px-3 text-sm font-semibold text-slate-100 hover:border-radar-600" type="button">-10s</button>
-                  <button id="pauseButton" class="h-9 rounded-[4px] bg-radar-700 px-4 text-sm font-semibold text-white hover:bg-radar-600" type="button">Pausar</button>
-                  <button id="forwardButton" class="h-9 rounded-[4px] border border-slate-700 px-3 text-sm font-semibold text-slate-100 hover:border-radar-600" type="button">+10s</button>
+              <input id="progressRange" class="w-full accent-radar-600" type="range" min="0" max="0" step="0.1" value="0" disabled>
+              <div class="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                <div class="col-start-2 flex items-center justify-center gap-2">
+                  <button id="backButton" class="h-9 rounded-[4px] border border-slate-700 px-3 text-sm font-semibold text-slate-100 hover:border-radar-600" type="button" disabled>-10s</button>
+                  <button id="pauseButton" class="grid h-9 w-11 place-items-center rounded-[4px] bg-radar-700 text-white hover:bg-radar-600" type="button" aria-label="Pausar" title="Pausar" disabled></button>
+                  <button id="forwardButton" class="h-9 rounded-[4px] border border-slate-700 px-3 text-sm font-semibold text-slate-100 hover:border-radar-600" type="button" disabled>+10s</button>
                 </div>
-                <div class="text-sm font-medium text-slate-300">
+                <div class="col-start-3 justify-self-end text-sm font-medium text-slate-300">
                   <span id="currentTime">0:00</span>
                   <span class="text-slate-600">/</span>
                   <span id="durationTime">0:00</span>
@@ -84,32 +37,52 @@
               </div>
             </div>
           </section>
-
-          <form id="uploadForm" class="drop-zone mt-4 hidden min-h-[54px] w-full cursor-pointer items-center justify-between gap-4 rounded-[5px] border border-dashed border-slate-400 bg-white px-4 py-3 transition hover:border-radar-600 hover:bg-radar-50/60">
-            <input id="videoInput" class="hidden" name="video" type="file" accept="video/*">
-            <div class="min-w-0">
-              <strong class="block text-sm font-semibold text-slate-950">Soltar video</strong>
-              <span id="uploadText" class="block truncate text-xs text-slate-500">seleccionar archivo local</span>
-            </div>
-            <span class="hidden border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 sm:inline-block">MP4</span>
-          </form>
         </div>
 
         <aside class="min-w-0 border-y border-slate-200 bg-white py-5 lg:border-y-0 lg:border-l lg:py-1 lg:pl-5">
-          <div class="mb-4 flex items-start justify-between gap-4">
-            <div>
-              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Resumen</p>
-              <h2 class="mt-1 text-lg font-semibold text-slate-950">Placas detectadas</h2>
+          <section class="info-panel">
+            <div class="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Resumen</p>
+                <h2 class="mt-1 text-lg font-semibold text-slate-950">Placas detectadas</h2>
+              </div>
+              <span id="plateCount" class="border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">0</span>
             </div>
-            <span id="plateCount" class="border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">0</span>
-          </div>
 
-          <div id="platesList" class="grid">
-            <article class="plate-row">
-              <img id="plateCrop" class="plate-thumb" src="{{ url_for('plate_crop') }}" alt="Recorte de placa">
-              <div class="min-w-0 text-sm text-slate-500">Sin placa detectada</div>
-            </article>
-          </div>
+            <div id="platesList" class="grid">
+              <article class="plate-row">
+                <img id="plateCrop" class="plate-thumb" src="{{ url_for('plate_crop') }}" alt="Recorte de placa">
+                <div class="min-w-0 text-sm text-slate-500">Sin placa detectada</div>
+              </article>
+            </div>
+          </section>
+
+          <section class="info-panel mt-4">
+            <div class="mb-3 flex items-start justify-between gap-4">
+              <div class="min-w-0">
+                <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Fuente activa</p>
+                <p id="sourceValue" class="mt-1 truncate text-sm font-semibold text-slate-900">Sin iniciar</p>
+              </div>
+              <div class="relative shrink-0">
+                <button id="sourceButton" class="h-10 rounded-[4px] bg-radar-700 px-4 text-sm font-semibold text-white transition hover:bg-radar-600" type="button" aria-expanded="false">
+                  Fuente
+                </button>
+                <div id="sourceMenu" class="source-menu hidden">
+                  <button class="source-option" type="button" data-type="camera" data-value="0">Camara 0</button>
+                  <button class="source-option" type="button" data-type="video" data-value="video">Video</button>
+                </div>
+              </div>
+            </div>
+
+            <form id="uploadForm" class="drop-zone hidden min-h-[54px] w-full cursor-pointer items-center justify-between gap-4 rounded-[5px] border border-dashed border-slate-400 bg-white px-4 py-3 transition hover:border-radar-600 hover:bg-radar-50/60">
+              <input id="videoInput" class="hidden" name="video" type="file" accept="video/*">
+              <div class="min-w-0">
+                <strong class="block text-sm font-semibold text-slate-950">Soltar video</strong>
+                <span id="uploadText" class="block truncate text-xs text-slate-500">seleccionar archivo local</span>
+              </div>
+              <span class="hidden border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 sm:inline-block">MP4</span>
+            </form>
+          </section>
 
           {% if detector_error %}
           <div class="mt-5 border-l-4 border-red-600 pl-3 text-sm text-red-700">{{ detector_error }}</div>
@@ -141,7 +114,8 @@
       let isPaused = false;
       let statusTimer = null;
       let lastStatus = null;
-      let sourceMode = "camera";
+      let sourceMode = "idle";
+      let streamStarted = false;
 
       function startStatusPolling() {
         stopStatusPolling();
@@ -157,11 +131,55 @@
       }
 
       function restartVideoStream() {
+        streamStarted = true;
+        pauseButton.disabled = false;
         videoFrame.src = `/video_feed?t=${Date.now()}`;
       }
 
       function freezeVideoFrame() {
         videoFrame.src = `/current_frame?t=${Date.now()}`;
+      }
+
+      function playbackIcon(paused) {
+        if (paused) {
+          return `
+            <svg aria-hidden="true" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z"></path>
+            </svg>
+          `;
+        }
+
+        return `
+          <svg aria-hidden="true" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M7 5h3v14H7z"></path>
+            <path d="M14 5h3v14h-3z"></path>
+          </svg>
+        `;
+      }
+
+      function updatePlaybackButton(paused) {
+        const label = paused ? "Reanudar" : "Pausar";
+        pauseButton.innerHTML = playbackIcon(paused);
+        pauseButton.setAttribute("aria-label", label);
+        pauseButton.title = label;
+      }
+
+      async function togglePlayback() {
+        if (!streamStarted) return;
+
+        const response = await fetch("/toggle_pause", { method: "POST" });
+        const data = await response.json();
+        isPaused = data.paused;
+        updatePlaybackButton(isPaused);
+
+        if (isPaused) {
+          freezeVideoFrame();
+          stopStatusPolling();
+          return;
+        }
+
+        restartVideoStream();
+        startStatusPolling();
       }
 
       async function sendVideo(file) {
@@ -187,7 +205,7 @@
           sourceMode = "video";
           uploadText.textContent = data.filename;
           sourceValue.textContent = data.filename;
-          pauseButton.textContent = "Pausar";
+          updatePlaybackButton(false);
           restartVideoStream();
           startStatusPolling();
         } catch (error) {
@@ -243,21 +261,8 @@
 
         await selectCamera(option.dataset.value, option.textContent.trim());
       });
-      pauseButton.addEventListener("click", async () => {
-        const response = await fetch("/toggle_pause", { method: "POST" });
-        const data = await response.json();
-        isPaused = data.paused;
-        pauseButton.textContent = isPaused ? "Reanudar" : "Pausar";
-
-        if (isPaused) {
-          freezeVideoFrame();
-          stopStatusPolling();
-          return;
-        }
-
-        restartVideoStream();
-        startStatusPolling();
-      });
+      pauseButton.addEventListener("click", togglePlayback);
+      videoFrame.addEventListener("click", togglePlayback);
       backButton.addEventListener("click", () => seekRelative(-10));
       forwardButton.addEventListener("click", () => seekRelative(10));
       progressRange.addEventListener("pointerdown", () => {
@@ -303,6 +308,63 @@
         return `${mins}:${secs}`;
       }
 
+      function formatPercent(value) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(1)}%` : "--";
+      }
+
+      function renderCharacters(characters) {
+        if (!characters || !characters.length) {
+          return `<div class="text-xs text-slate-500">Caracteres: --</div>`;
+        }
+
+        return `
+          <div class="flex flex-wrap gap-1.5">
+            ${characters.map((char) => `
+              <span class="inline-flex items-center gap-1 border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-xs">
+                <strong class="text-slate-900">${char.value}</strong>
+                <span class="font-semibold text-radar-700">${formatPercent(char.confidence)}</span>
+              </span>
+            `).join("")}
+          </div>
+        `;
+      }
+
+      function riskClasses(fuzzy) {
+        if (!fuzzy) return "border-slate-200 bg-white";
+        if (fuzzy.is_safe) return "border-emerald-200 bg-emerald-50/70";
+        if (["Advertencia", "Leve"].includes(fuzzy.label)) return "border-amber-300 bg-amber-50";
+        return "border-red-300 bg-red-50";
+      }
+
+      function riskTextClasses(fuzzy) {
+        if (!fuzzy) return "text-slate-500";
+        if (fuzzy.is_safe) return "text-emerald-700";
+        if (["Advertencia", "Leve"].includes(fuzzy.label)) return "text-amber-700";
+        return "text-red-700";
+      }
+
+      function renderFuzzyStatus(fuzzy) {
+        if (!fuzzy) {
+          return `<div><span class="text-slate-500">Estado:</span> <strong class="text-slate-900">esperando velocidad</strong></div>`;
+        }
+
+        if (fuzzy.is_safe) {
+          return `
+            <div><span class="text-slate-500">Estado:</span> <strong class="${riskTextClasses(fuzzy)}">Normal</strong></div>
+            <div class="text-xs font-semibold ${riskTextClasses(fuzzy)}">Dentro del rango permitido</div>
+          `;
+        }
+
+        const penalty = Number(fuzzy.penalizacion_horas || 0).toFixed(2);
+        const message = fuzzy.message || "Incidencia registrada";
+        return `
+          <div><span class="text-slate-500">Riesgo:</span> <strong class="${riskTextClasses(fuzzy)}">${fuzzy.label}</strong></div>
+          <div><span class="text-slate-500">Penalizacion:</span> <strong class="${riskTextClasses(fuzzy)}">${penalty} h</strong></div>
+          <div class="text-xs font-semibold ${riskTextClasses(fuzzy)}">${message}</div>
+        `;
+      }
+
       function renderPlates(detections) {
         if (!detections.length) {
           plateCount.textContent = "0";
@@ -317,12 +379,18 @@
 
         plateCount.textContent = detections.length;
         platesList.innerHTML = detections.map((item) => `
-          <article class="plate-row">
+          <article class="plate-row border-l-4 px-3 ${riskClasses(item.fuzzy_result)}">
             <img class="plate-thumb" src="/plate_crop/${item.index}?t=${Date.now()}" alt="Recorte de placa">
             <div class="grid min-w-0 gap-1 text-sm">
-              <div><span class="text-slate-500">Placa:</span> <strong class="text-slate-900">${item.plate_text || "Leyendo placa"}</strong></div>
-              <div><span class="text-slate-500">Velocidad:</span> <strong class="text-slate-900">${item.speed_kmh == null ? "--" : item.speed_kmh.toFixed(1) + " km/h"}</strong></div>
-              <div><span class="text-slate-500">Confianza placa:</span> <strong class="text-radar-700">${item.confidence ? (item.confidence * 100).toFixed(1) + "%" : "--"}</strong></div>
+              <div class="flex flex-wrap items-baseline gap-2">
+                <span class="text-slate-500">Placa:</span>
+                <strong class="text-slate-900">${item.plate_text || "Leyendo placa"}</strong>
+                ${item.plate_text ? `<strong class="text-radar-700">${formatPercent(item.plate_text_confidence)}</strong>` : ""}
+              </div>
+              ${renderCharacters(item.characters)}
+              <div><span class="text-slate-500">Velocidad:</span> <strong class="text-slate-900">${item.speed_kmh == null ? (item.speed_status || "esperando cruce") : item.speed_kmh.toFixed(1) + " km/h"}</strong></div>
+              ${renderFuzzyStatus(item.fuzzy_result)}
+              <div><span class="text-slate-500">Confianza deteccion:</span> <strong class="text-radar-700">${formatPercent(item.confidence)}</strong></div>
             </div>
           </article>
         `).join("");
@@ -358,7 +426,7 @@
         uploadForm.classList.remove("flex");
         uploadText.textContent = "seleccionar archivo local";
         sourceValue.textContent = label || `Camara ${source}`;
-        pauseButton.textContent = "Pausar";
+        updatePlaybackButton(false);
         restartVideoStream();
         startStatusPolling();
       }
@@ -383,7 +451,7 @@
         if (!data) return;
         lastStatus = data;
         isPaused = data.paused;
-        pauseButton.textContent = data.paused ? "Reanudar" : "Pausar";
+        updatePlaybackButton(data.paused);
         progressRange.max = data.duration_seconds || 0;
         if (!isSeeking) {
           progressRange.value = data.position_seconds || 0;
@@ -393,11 +461,14 @@
         backButton.disabled = !data.is_seekable;
         forwardButton.disabled = !data.is_seekable;
         progressRange.disabled = !data.is_seekable;
-        sourceValue.textContent = data.source || sourceValue.textContent;
+        if (streamStarted && data.source) {
+          sourceValue.textContent = data.source;
+        }
         renderPlates(data.detections || []);
       }
 
-      startStatusPolling();
+      renderPlates([]);
+      updatePlaybackButton(false);
     </script>
   </body>
 </html>

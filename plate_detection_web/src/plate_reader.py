@@ -13,11 +13,13 @@ class PlateReader:
         confidence_threshold=0.25,
         image_size=320,
         device="auto",
+        max_variants=4,
     ):
         self.model_path = Path(model_path).expanduser().resolve()
         self.confidence_threshold = confidence_threshold
         self.image_size = image_size
         self.device = None if device == "auto" else device
+        self.max_variants = max(1, int(max_variants))
 
         if not self.model_path.exists():
             raise FileNotFoundError(
@@ -129,12 +131,13 @@ class PlateReader:
         gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         adaptive_bgr = cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR)
 
-        return [
+        variants = [
             {"image": base, "weight": 1.0},
             {"image": high_contrast, "weight": 0.95},
             {"image": gray_bgr, "weight": 0.9},
             {"image": adaptive_bgr, "weight": 0.45},
         ]
+        return variants[: self.max_variants]
 
     def _prepare_base_crop(self, crop):
         crop = self._ensure_bgr(crop)

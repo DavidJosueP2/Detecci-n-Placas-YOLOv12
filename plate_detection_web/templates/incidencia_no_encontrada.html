@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Incidencia no encontrada</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    {% include "_tailwind_config.html" %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body class="min-h-screen bg-white font-onest text-slate-950">
+    {% include "_topbar.html" %}
+    <main class="mx-auto grid min-h-[calc(100vh-64px)] w-[min(1360px,calc(100%-32px))] place-items-center py-6">
+      <section class="w-[min(520px,100%)] border border-slate-200 p-6 text-center">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Historial</p>
+        <h1 class="mt-2 text-xl font-semibold">Incidencia no encontrada</h1>
+        <p class="mt-2 text-sm text-slate-500">El registro solicitado no existe o todavia no ha terminado de guardarse.</p>
+        <a class="mt-5 inline-flex rounded-[4px] bg-radar-700 px-4 py-2 text-sm font-semibold text-white hover:bg-radar-600" href="{{ url_for('incidencias') }}">Volver al historial</a>
+      </section>
+    </main>
+  </body>
+</html>

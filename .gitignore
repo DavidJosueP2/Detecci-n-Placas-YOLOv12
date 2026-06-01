@@ -62,3 +62,12 @@ outputs_yolo12_pro/
 
 # Capturas generadas por la web
 plate_detection_web/static/captures/*.mp4
+
+reportes/
+reporte/
+reporte_evaluacion/
+reporte_evaluacion_individual/
+
+plate_detection_web/models/license_plate_keypoint.pt
+
+data/
