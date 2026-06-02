@@ -4,6 +4,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
+MODELS_DIR = PROJECT_ROOT / "models"
 
 
 def load_env_file(path):
@@ -44,12 +45,14 @@ def resolve_model_path():
         return path if path.is_absolute() else BASE_DIR / path
 
     candidates = [
+        MODELS_DIR / "plate_detection" / "90mil_50 epocas.pt",
+        MODELS_DIR / "90mil_50 epocas.pt",
         BASE_DIR / "models" / "90mil_50 epocas.pt",
-        
-        #BASE_DIR / "models" / "90mil_10 epocas.pt",
-        #BASE_DIR / "models" / "lp_yolo11x_morsetech.pt",
-        #PROJECT_ROOT / "models" / "Best_epoch_2_90mil.pt",
-        #PROJECT_ROOT / "models" / "best_placas_ecuador.pt",
+        MODELS_DIR / "plate_detection" / "90mil_38 epocas.pt",
+        MODELS_DIR / "90mil_38 epocas.pt",
+        BASE_DIR / "models" / "90mil_38 epocas.pt",
+        MODELS_DIR / "best_placas_ecuador.pt",
+        MODELS_DIR / "Best_epoch_2_90mil.pt",
     ]
 
     for candidate in candidates:
@@ -66,8 +69,8 @@ def resolve_character_model_path():
         return path if path.is_absolute() else BASE_DIR / path
 
     candidates = [
-        BASE_DIR / "models" / "Character-LP.pt",
-        BASE_DIR / "models" / "Charcter-LP.pt",
+        MODELS_DIR / "character_detection" / "Character-LP.pt",
+        MODELS_DIR / "character_detection" / "Charcter-LP.pt",
     ]
 
     for candidate in candidates:
