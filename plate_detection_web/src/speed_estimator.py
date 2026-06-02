@@ -109,6 +109,56 @@ class SpeedEstimator:
             },
         ]
 
+    def get_config(self):
+        return {
+            "line_a_left_y": self.line_a_left_y,
+            "line_a_right_y": self.line_a_right_y,
+            "line_b_left_y": self.line_b_left_y,
+            "line_b_right_y": self.line_b_right_y,
+            "roi_x1": self.roi_x1,
+            "roi_x2": self.roi_x2,
+            "distance_meters": self.distance_meters,
+            "direction": self.direction,
+            "hysteresis_px": self.hysteresis_px,
+            "min_travel_time": self.min_travel_time,
+            "max_travel_time": self.max_travel_time,
+            "min_movement_px": self.min_movement_px,
+            "min_partial_progress": self.min_partial_progress,
+        }
+
+    def update_config(self, **values):
+        if "line_a_left_y" in values:
+            self.line_a_left_y = self._clamp_normalized(values["line_a_left_y"])
+        if "line_a_right_y" in values:
+            self.line_a_right_y = self._clamp_normalized(values["line_a_right_y"])
+        if "line_b_left_y" in values:
+            self.line_b_left_y = self._clamp_normalized(values["line_b_left_y"])
+        if "line_b_right_y" in values:
+            self.line_b_right_y = self._clamp_normalized(values["line_b_right_y"])
+        if "roi_x1" in values:
+            self.roi_x1 = self._clamp_normalized(values["roi_x1"])
+        if "roi_x2" in values:
+            self.roi_x2 = self._clamp_normalized(values["roi_x2"])
+        if self.roi_x2 < self.roi_x1:
+            self.roi_x1, self.roi_x2 = self.roi_x2, self.roi_x1
+        if "distance_meters" in values:
+            self.distance_meters = max(0.1, float(values["distance_meters"]))
+        if "direction" in values:
+            self.direction = str(values["direction"]).strip().lower() or "both"
+        if "hysteresis_px" in values:
+            self.hysteresis_px = max(1.0, float(values["hysteresis_px"]))
+        if "min_travel_time" in values:
+            self.min_travel_time = max(0.01, float(values["min_travel_time"]))
+            self.max_travel_time = max(self.min_travel_time, self.max_travel_time)
+        if "max_travel_time" in values:
+            self.max_travel_time = max(self.min_travel_time, float(values["max_travel_time"]))
+        if "min_movement_px" in values:
+            self.min_movement_px = max(0.0, float(values["min_movement_px"]))
+        if "min_partial_progress" in values:
+            self.min_partial_progress = max(0.05, min(1.0, float(values["min_partial_progress"])))
+        self.reset()
+        return self.get_config()
+
     def reset(self):
         self.history.clear()
 

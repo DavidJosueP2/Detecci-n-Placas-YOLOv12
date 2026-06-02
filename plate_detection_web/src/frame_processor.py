@@ -161,8 +161,9 @@ def draw_stats_overlay(image, stats):
         cv2.putText(image, row, (x1 + padding, y), font, font_scale, (226, 232, 240), 1, cv2.LINE_AA)
 
 
-def encode_jpeg(image):
-    success, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 78])
+def encode_jpeg(image, quality=68):
+    quality = int(clamp(quality, 35, 95))
+    success, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     if not success:
         return None
     return buffer.tobytes()

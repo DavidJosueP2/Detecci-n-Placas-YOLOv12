@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Configuracion</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    {% include "_tailwind_config.html" %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body
+    class="min-h-screen bg-white font-onest text-slate-950"
+    style="--video-aspect-ratio: {{ video_aspect_ratio }}; --video-max-width: {{ video_max_width }};"
+  >
+    {% include "_topbar.html" %}
+
+    <main class="mx-auto w-[min(1360px,calc(100%-32px))] py-6">
+      <section class="workspace-grid">
+        <div class="min-w-0">
+          <section class="overflow-hidden rounded-[6px] border border-slate-300 bg-white">
+            <div id="lineEditor" class="config-video-stage bg-slate-950">
+              <img id="configFrame" class="block h-full w-full bg-slate-950 object-contain" src="{{ url_for('current_frame') }}" alt="Vista de configuracion">
+              <svg id="lineOverlay" class="line-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <line id="lineA" class="config-line-a" x1="0" y1="36" x2="100" y2="32"></line>
+                <line id="lineB" class="config-line-b" x1="0" y1="66" x2="100" y2="63"></line>
+                <circle id="handleALeft" class="line-handle line-handle-a" r="1.5" data-key="line_a_left_y"></circle>
+                <circle id="handleARight" class="line-handle line-handle-a" r="1.5" data-key="line_a_right_y"></circle>
+                <circle id="handleBLeft" class="line-handle line-handle-b" r="1.5" data-key="line_b_left_y"></circle>
+                <circle id="handleBRight" class="line-handle line-handle-b" r="1.5" data-key="line_b_right_y"></circle>
+              </svg>
+            </div>
+          </section>
+        </div>
+
+        <aside class="min-w-0 border-y border-slate-200 bg-white py-5 lg:border-y-0 lg:border-l lg:py-1 lg:pl-5">
+          <section class="info-panel">
+            <div class="mb-4">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Configuracion</p>
+              <h2 class="mt-1 text-lg font-semibold text-slate-950">Velocidad</h2>
+            </div>
+
+            <div class="grid gap-4">
+              <label class="grid gap-1 text-sm">
+                <span class="font-semibold text-slate-700">Distancia entre lineas</span>
+                <div class="flex items-center gap-2">
+                  <input id="distanceInput" class="h-10 w-full rounded-[4px] border border-slate-300 px-3 text-sm font-semibold outline-none focus:border-radar-700" type="number" min="0.1" step="0.1">
+                  <span class="text-sm font-semibold text-slate-500">m</span>
+                </div>
+              </label>
+
+              <div class="grid grid-cols-2 gap-2">
+                <button id="liveButton" class="h-10 rounded-[4px] border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:border-radar-600 hover:text-radar-700" type="button">
+                  Vista en vivo
+                </button>
+                <button id="saveButton" class="h-10 rounded-[4px] bg-radar-700 px-3 text-sm font-semibold text-white hover:bg-radar-600" type="button">
+                  Guardar
+                </button>
+              </div>
+
+              <div class="grid gap-2 border-t border-slate-200 pt-4 text-sm">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="font-semibold text-slate-700">Linea A izquierda</span>
+                  <span id="lineALeftValue" class="font-semibold text-radar-700">--</span>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <span class="font-semibold text-slate-700">Linea A derecha</span>
+                  <span id="lineARightValue" class="font-semibold text-radar-700">--</span>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <span class="font-semibold text-slate-700">Linea B izquierda</span>
+                  <span id="lineBLeftValue" class="font-semibold text-radar-700">--</span>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <span class="font-semibold text-slate-700">Linea B derecha</span>
+                  <span id="lineBRightValue" class="font-semibold text-radar-700">--</span>
+                </div>
+              </div>
+
+              <p id="saveStatus" class="min-h-[20px] text-sm font-semibold text-slate-500"></p>
+            </div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script>
+      const configFrame = document.getElementById("configFrame");
+      const lineOverlay = document.getElementById("lineOverlay");
+      const lineA = document.getElementById("lineA");
+      const lineB = document.getElementById("lineB");
+      const handleALeft = document.getElementById("handleALeft");
+      const handleARight = document.getElementById("handleARight");
+      const handleBLeft = document.getElementById("handleBLeft");
+      const handleBRight = document.getElementById("handleBRight");
+      const distanceInput = document.getElementById("distanceInput");
+      const saveButton = document.getElementById("saveButton");
+      const liveButton = document.getElementById("liveButton");
+      const saveStatus = document.getElementById("saveStatus");
+      const handles = Array.from(document.querySelectorAll(".line-handle"));
+      const values = {
+        line_a_left_y: document.getElementById("lineALeftValue"),
+        line_a_right_y: document.getElementById("lineARightValue"),
+        line_b_left_y: document.getElementById("lineBLeftValue"),
+        line_b_right_y: document.getElementById("lineBRightValue"),
+      };
+      const config = {
+        line_a_left_y: 0.36,
+        line_a_right_y: 0.32,
+        line_b_left_y: 0.66,
+        line_b_right_y: 0.63,
+        roi_x1: 0,
+        roi_x2: 1,
+        distance_meters: 5,
+      };
+      let activeHandle = null;
+      let pendingTimer = null;
+      let liveStarted = false;
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function percent(value) {
+        return `${Math.round(value * 100)}%`;
+      }
+
+      function drawLines() {
+        const x1 = config.roi_x1 * 100;
+        const x2 = config.roi_x2 * 100;
+        const aLeft = config.line_a_left_y * 100;
+        const aRight = config.line_a_right_y * 100;
+        const bLeft = config.line_b_left_y * 100;
+        const bRight = config.line_b_right_y * 100;
+
+        lineA.setAttribute("x1", x1);
+        lineA.setAttribute("x2", x2);
+        lineA.setAttribute("y1", aLeft);
+        lineA.setAttribute("y2", aRight);
+        lineB.setAttribute("x1", x1);
+        lineB.setAttribute("x2", x2);
+        lineB.setAttribute("y1", bLeft);
+        lineB.setAttribute("y2", bRight);
+
+        handleALeft.setAttribute("cx", x1);
+        handleALeft.setAttribute("cy", aLeft);
+        handleARight.setAttribute("cx", x2);
+        handleARight.setAttribute("cy", aRight);
+        handleBLeft.setAttribute("cx", x1);
+        handleBLeft.setAttribute("cy", bLeft);
+        handleBRight.setAttribute("cx", x2);
+        handleBRight.setAttribute("cy", bRight);
+
+        values.line_a_left_y.textContent = percent(config.line_a_left_y);
+        values.line_a_right_y.textContent = percent(config.line_a_right_y);
+        values.line_b_left_y.textContent = percent(config.line_b_left_y);
+        values.line_b_right_y.textContent = percent(config.line_b_right_y);
+        distanceInput.value = Number(config.distance_meters || 5).toFixed(1);
+      }
+
+      async function loadConfig() {
+        const response = await fetch("/api/speed_config", { cache: "no-store" });
+        const data = await response.json();
+        if (!data.ok) return;
+        Object.assign(config, data.config);
+        drawLines();
+      }
+
+      function scheduleSave() {
+        window.clearTimeout(pendingTimer);
+        pendingTimer = window.setTimeout(() => saveConfig("Configuracion aplicada"), 180);
+      }
+
+      async function saveConfig(message = "Configuracion guardada") {
+        const distance = Number(distanceInput.value);
+        if (Number.isFinite(distance)) {
+          config.distance_meters = distance;
+        }
+
+        const response = await fetch("/api/speed_config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          saveStatus.textContent = data.error || "No se pudo guardar";
+          saveStatus.className = "min-h-[20px] text-sm font-semibold text-red-700";
+          return;
+        }
+
+        Object.assign(config, data.config);
+        drawLines();
+        saveStatus.textContent = message;
+        saveStatus.className = "min-h-[20px] text-sm font-semibold text-radar-700";
+      }
+
+      function pointerToNormalizedY(event) {
+        const rect = lineOverlay.getBoundingClientRect();
+        return clamp((event.clientY - rect.top) / rect.height, 0, 1);
+      }
+
+      handles.forEach((handle) => {
+        handle.addEventListener("pointerdown", (event) => {
+          activeHandle = handle;
+          handle.setPointerCapture(event.pointerId);
+        });
+
+        handle.addEventListener("pointermove", (event) => {
+          if (activeHandle !== handle) return;
+          config[handle.dataset.key] = pointerToNormalizedY(event);
+          drawLines();
+          scheduleSave();
+        });
+
+        handle.addEventListener("pointerup", () => {
+          activeHandle = null;
+          saveConfig("Configuracion aplicada");
+        });
+      });
+
+      distanceInput.addEventListener("change", () => saveConfig());
+      saveButton.addEventListener("click", () => saveConfig());
+      liveButton.addEventListener("click", () => {
+        liveStarted = !liveStarted;
+        configFrame.src = liveStarted ? `/video_feed?t=${Date.now()}` : `/current_frame?t=${Date.now()}`;
+        liveButton.textContent = liveStarted ? "Pausar vista" : "Vista en vivo";
+      });
+
+      window.setInterval(() => {
+        if (!liveStarted) {
+          configFrame.src = `/current_frame?t=${Date.now()}`;
+        }
+      }, 1200);
+
+      loadConfig();
+    </script>
+  </body>
+</html>

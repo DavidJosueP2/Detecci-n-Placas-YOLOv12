@@ -117,6 +117,7 @@ class Config:
     STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "12"))
     STREAM_MAX_WIDTH = int(os.getenv("STREAM_MAX_WIDTH", "960"))
     DETECTION_EVERY_N_FRAMES = int(os.getenv("DETECTION_EVERY_N_FRAMES", "6"))
+    LIVE_DETECTION_INTERVAL_SECONDS = float(os.getenv("LIVE_DETECTION_INTERVAL_SECONDS", "0.25"))
     OCR_INTERVAL_SECONDS = float(os.getenv("OCR_INTERVAL_SECONDS", "1.25"))
     OCR_RETRY_INTERVAL_SECONDS = float(os.getenv("OCR_RETRY_INTERVAL_SECONDS", "0.30"))
     OCR_MAX_PLATES_PER_FRAME = int(os.getenv("OCR_MAX_PLATES_PER_FRAME", "1"))
@@ -125,6 +126,11 @@ class Config:
     VIDEO_ASPECT_RATIO = os.getenv("VIDEO_ASPECT_RATIO", "16 / 9")
     VIDEO_MAX_WIDTH = os.getenv("VIDEO_MAX_WIDTH", "860px")
     CAMERA_SCAN_LIMIT = int(os.getenv("CAMERA_SCAN_LIMIT", "10"))
+    CAMERA_BACKEND = os.getenv("CAMERA_BACKEND", "dshow")
+    CAMERA_WIDTH = int(os.getenv("CAMERA_WIDTH", "640"))
+    CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "480"))
+    CAMERA_FPS = float(os.getenv("CAMERA_FPS", "30"))
+    CAMERA_FOURCC = os.getenv("CAMERA_FOURCC", "MJPG")
     UPLOAD_DIR = BASE_DIR / "static" / "captures"
     STATIC_DIR = BASE_DIR / "static"
     DATA_DIR = BASE_DIR / "data"

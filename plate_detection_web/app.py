@@ -66,13 +66,58 @@ stream = VideoStream(
     target_fps=Config.STREAM_TARGET_FPS,
     stream_max_width=Config.STREAM_MAX_WIDTH,
     detection_every_n_frames=Config.DETECTION_EVERY_N_FRAMES,
+    live_detection_interval_seconds=Config.LIVE_DETECTION_INTERVAL_SECONDS,
     ocr_interval_seconds=Config.OCR_INTERVAL_SECONDS,
     ocr_retry_interval_seconds=Config.OCR_RETRY_INTERVAL_SECONDS,
     ocr_max_plates_per_frame=Config.OCR_MAX_PLATES_PER_FRAME,
     ocr_min_detection_confidence=Config.OCR_MIN_DETECTION_CONFIDENCE,
+    camera_backend=Config.CAMERA_BACKEND,
+    camera_width=Config.CAMERA_WIDTH,
+    camera_height=Config.CAMERA_HEIGHT,
+    camera_fps=Config.CAMERA_FPS,
+    camera_fourcc=Config.CAMERA_FOURCC,
     incident_service=incident_service,
     detector_error=detector_error or reader_error,
 )
+
+
+SPEED_CONFIG_ENV_KEYS = {
+    "line_a_left_y": "SPEED_LINE_A_LEFT_Y",
+    "line_a_right_y": "SPEED_LINE_A_RIGHT_Y",
+    "line_b_left_y": "SPEED_LINE_B_LEFT_Y",
+    "line_b_right_y": "SPEED_LINE_B_RIGHT_Y",
+    "roi_x1": "SPEED_ROI_X1",
+    "roi_x2": "SPEED_ROI_X2",
+    "distance_meters": "SPEED_DISTANCE_METERS",
+}
+
+
+def update_env_values(values):
+    env_path = Path(__file__).resolve().parent / ".env"
+    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    pending = {key: str(value) for key, value in values.items()}
+    updated_lines = []
+
+    for line in existing_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            updated_lines.append(line)
+            continue
+
+        key, _ = line.split("=", 1)
+        key = key.strip()
+        if key in pending:
+            updated_lines.append(f"{key}={pending.pop(key)}")
+        else:
+            updated_lines.append(line)
+
+    if pending:
+        if updated_lines and updated_lines[-1].strip():
+            updated_lines.append("")
+        for key, value in pending.items():
+            updated_lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
 
 
 def available_camera_sources():
@@ -125,6 +170,52 @@ def incidencia_detalle(incident_id):
     if incident is None:
         return render_template("incidencia_no_encontrada.html", active_page="incidencias"), 404
     return render_template("incidencia_detalle.html", incident=incident, active_page="incidencias")
+
+
+@app.route("/configuracion")
+def configuracion():
+    return render_template(
+        "configuracion.html",
+        active_page="configuracion",
+        video_aspect_ratio=Config.VIDEO_ASPECT_RATIO,
+        video_max_width=Config.VIDEO_MAX_WIDTH,
+    )
+
+
+@app.route("/api/speed_config", methods=["GET", "POST"])
+def speed_config():
+    if request.method == "GET":
+        return jsonify({"ok": True, "config": stream.current_speed_config()})
+
+    payload = request.get_json(silent=True) or {}
+    accepted = {}
+    numeric_fields = {
+        "line_a_left_y",
+        "line_a_right_y",
+        "line_b_left_y",
+        "line_b_right_y",
+        "roi_x1",
+        "roi_x2",
+        "distance_meters",
+    }
+    for field in numeric_fields:
+        if field not in payload:
+            continue
+        try:
+            accepted[field] = float(payload[field])
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
+
+    updated = stream.update_speed_config(**accepted)
+    env_values = {
+        env_key: f"{updated[field]:.4f}".rstrip("0").rstrip(".")
+        for field, env_key in SPEED_CONFIG_ENV_KEYS.items()
+        if field in accepted
+    }
+    if env_values:
+        update_env_values(env_values)
+
+    return jsonify({"ok": True, "config": updated})
 
 
 @app.route("/video_feed")

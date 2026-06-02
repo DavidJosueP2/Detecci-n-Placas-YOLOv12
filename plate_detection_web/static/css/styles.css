@@ -41,6 +41,50 @@
   margin-inline: auto;
 }
 
+.config-video-stage {
+  position: relative;
+  aspect-ratio: var(--video-aspect-ratio);
+  width: min(100%, var(--video-max-width));
+  margin-inline: auto;
+  touch-action: none;
+}
+
+.line-overlay {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.config-line-a,
+.config-line-b {
+  stroke-width: 0.45;
+  vector-effect: non-scaling-stroke;
+}
+
+.config-line-a {
+  stroke: #00c4ff;
+}
+
+.config-line-b {
+  stroke: #38d98c;
+}
+
+.line-handle {
+  cursor: ns-resize;
+  stroke: #ffffff;
+  stroke-width: 0.45;
+  vector-effect: non-scaling-stroke;
+}
+
+.line-handle-a {
+  fill: #00c4ff;
+}
+
+.line-handle-b {
+  fill: #38d98c;
+}
+
 .info-panel {
   border: 1px solid #dbe3ee;
   border-radius: 6px;

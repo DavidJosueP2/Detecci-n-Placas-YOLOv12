@@ -37,10 +37,16 @@ class VideoStream:
         target_fps=12.0,
         stream_max_width=960,
         detection_every_n_frames=6,
+        live_detection_interval_seconds=0.12,
         ocr_interval_seconds=1.25,
         ocr_retry_interval_seconds=0.30,
         ocr_max_plates_per_frame=1,
         ocr_min_detection_confidence=0.20,
+        camera_backend="msmf",
+        camera_width=640,
+        camera_height=480,
+        camera_fps=30.0,
+        camera_fourcc="MJPG",
         incident_service=None,
         detector_error=None,
     ):
@@ -53,14 +59,21 @@ class VideoStream:
         self.target_fps = max(1.0, float(target_fps))
         self.stream_max_width = max(0, int(stream_max_width))
         self.detection_every_n_frames = max(1, int(detection_every_n_frames))
+        self.live_detection_interval_seconds = max(0.0, float(live_detection_interval_seconds))
         self.ocr_interval_seconds = max(0.0, float(ocr_interval_seconds))
         self.ocr_retry_interval_seconds = max(0.0, float(ocr_retry_interval_seconds))
         self.ocr_max_plates_per_frame = max(0, int(ocr_max_plates_per_frame))
         self.ocr_min_detection_confidence = max(0.0, float(ocr_min_detection_confidence))
+        self.camera_backend = str(camera_backend or "auto").strip().lower()
+        self.camera_width = max(0, int(camera_width))
+        self.camera_height = max(0, int(camera_height))
+        self.camera_fps = max(0.0, float(camera_fps))
+        self.camera_fourcc = str(camera_fourcc or "").strip().upper()
         self.incident_service = incident_service
         self.source_fps = 0.0
         self.display_fps = 0.0
         self.detector_ms = 0.0
+        self.last_live_detection_submitted_at = 0.0
         self.last_frame_started_at = 0.0
         self.lock = Lock()
         self.speed_estimator = SpeedEstimator(
@@ -83,6 +96,9 @@ class VideoStream:
         self.lightweight_tracks = {}
         self.next_track_id = 1
         self.ocr_executor = ThreadPoolExecutor(max_workers=1)
+        self.detector_executor = ThreadPoolExecutor(max_workers=1)
+        self.pending_detection = None
+        self.pending_detection_version = None
         self.pending_ocr = {}
         self.last_ocr_attempts = {}
         self.last_ocr_attempt_at = 0.0
@@ -204,7 +220,14 @@ class VideoStream:
             display_position = timestamp if isinstance(source, str) else 0.0
             with self.lock:
                 self.position_seconds = display_position
-            run_detection = self._should_detect_this_frame(source, frame_index)
+
+            if isinstance(source, str):
+                run_detection = self._should_detect_this_frame(source, frame_index)
+            else:
+                self._collect_async_detection(capture_version)
+                self._submit_async_detection(frame, source, timestamp, capture_version)
+                run_detection = False
+
             if run_detection:
                 detector_started_at = time.monotonic()
                 detections = self._detect_frame(frame, source, timestamp)
@@ -212,7 +235,8 @@ class VideoStream:
                 detections = self._enrich_detections(frame, detections, timestamp)
                 self.last_detections = detections
             else:
-                self._collect_ocr_results()
+                if isinstance(source, str):
+                    self._collect_ocr_results()
                 detections = [dict(item) for item in self.last_detections]
                 for detection in detections:
                     self._apply_cached_plate_text(detection)
@@ -274,6 +298,8 @@ class VideoStream:
             self.lightweight_tracks.clear()
             self.next_track_id = 1
             self.pending_ocr.clear()
+            self.pending_detection = None
+            self.pending_detection_version = None
             self.last_ocr_attempts.clear()
             self.last_ocr_attempt_at = 0.0
             self.status.update(
@@ -315,6 +341,17 @@ class VideoStream:
     def current_status(self):
         with self.lock:
             return dict(self.status)
+
+    def current_speed_config(self):
+        with self.lock:
+            return self.speed_estimator.get_config()
+
+    def update_speed_config(self, **values):
+        with self.lock:
+            config = self.speed_estimator.update_config(**values)
+            self.status["message"] = "Configuracion de velocidad actualizada"
+            self.status["timestamp"] = now_label()
+            return config
 
     def toggle_pause(self):
         with self.lock:
@@ -358,9 +395,52 @@ class VideoStream:
         with self.lock:
             source = self.source
             version = self.source_version
-        capture = cv2.VideoCapture(source)
+        if isinstance(source, int):
+            capture = self._open_camera_capture(source)
+            self._configure_camera_capture(capture)
+        else:
+            capture = cv2.VideoCapture(source)
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return capture, version, source
+
+    def _open_camera_capture(self, source):
+        tried = set()
+        for backend in self._camera_backend_candidates():
+            if backend in tried:
+                continue
+            tried.add(backend)
+            capture = cv2.VideoCapture(source, backend)
+            if capture.isOpened():
+                return capture
+            capture.release()
+        return cv2.VideoCapture(source)
+
+    def _camera_backend_candidates(self):
+        preferred = self._camera_backend_value()
+        return [preferred, cv2.CAP_MSMF, cv2.CAP_ANY, cv2.CAP_DSHOW]
+
+    def _camera_backend_value(self):
+        backends = {
+            "dshow": cv2.CAP_DSHOW,
+            "directshow": cv2.CAP_DSHOW,
+            "msmf": cv2.CAP_MSMF,
+            "any": cv2.CAP_ANY,
+            "auto": cv2.CAP_ANY,
+        }
+        return backends.get(self.camera_backend, cv2.CAP_MSMF)
+
+    def _configure_camera_capture(self, capture):
+        if self.camera_fourcc and len(self.camera_fourcc) == 4:
+            capture.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(*self.camera_fourcc),
+            )
+        if self.camera_width > 0:
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
+        if self.camera_height > 0:
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
+        if self.camera_fps > 0:
+            capture.set(cv2.CAP_PROP_FPS, self.camera_fps)
 
     def _update_capture_info(self, capture, source):
         frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -447,6 +527,55 @@ class VideoStream:
             return True
 
         return frame_index % self.detection_every_n_frames == 0
+
+    def _submit_async_detection(self, frame, source, timestamp, capture_version):
+        now = time.monotonic()
+        if now - self.last_live_detection_submitted_at < self.live_detection_interval_seconds:
+            return
+
+        if self.pending_detection is not None and not self.pending_detection.done():
+            return
+
+        if self.pending_detection is not None:
+            self._collect_async_detection(capture_version)
+            if self.pending_detection is not None:
+                return
+
+        self.pending_detection_version = capture_version
+        self.last_live_detection_submitted_at = now
+        self.pending_detection = self.detector_executor.submit(
+            self._detect_and_enrich_frame,
+            frame.copy(),
+            source,
+            timestamp,
+        )
+
+    def _collect_async_detection(self, capture_version):
+        if self.pending_detection is None or not self.pending_detection.done():
+            return
+
+        future = self.pending_detection
+        future_version = self.pending_detection_version
+        self.pending_detection = None
+        self.pending_detection_version = None
+
+        if future_version != capture_version:
+            return
+
+        try:
+            detections, detector_ms = future.result()
+        except Exception:
+            return
+
+        self.detector_ms = detector_ms
+        self.last_detections = detections
+
+    def _detect_and_enrich_frame(self, frame, source, timestamp):
+        detector_started_at = time.monotonic()
+        detections = self._detect_frame(frame, source, timestamp)
+        detector_ms = (time.monotonic() - detector_started_at) * 1000
+        detections = self._enrich_detections(frame, detections, timestamp)
+        return detections, detector_ms
 
     def _detect_frame(self, frame, source, timestamp):
         if not isinstance(source, str):
