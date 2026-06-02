@@ -391,6 +391,11 @@
               <div><span class="text-slate-500">Velocidad:</span> <strong class="text-slate-900">${item.speed_kmh == null ? (item.speed_status || "esperando cruce") : item.speed_kmh.toFixed(1) + " km/h"}</strong></div>
               ${renderFuzzyStatus(item.fuzzy_result)}
               <div><span class="text-slate-500">Confianza deteccion:</span> <strong class="text-radar-700">${formatPercent(item.confidence)}</strong></div>
+              <div>
+                <a class="inline-flex rounded-[4px] border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-radar-600 hover:text-radar-700" href="/ocr_detalle/${item.index}">
+                  Ver detalle OCR
+                </a>
+              </div>
             </div>
           </article>
         `).join("");

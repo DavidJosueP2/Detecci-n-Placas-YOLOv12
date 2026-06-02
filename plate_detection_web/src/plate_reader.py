@@ -54,6 +54,94 @@ class PlateReader:
         )
         return text, confidence, plate_chars
 
+    def preprocessing_debug(self, crop):
+        if crop is None or crop.size == 0:
+            return []
+
+        steps = []
+
+        def add(title, description, image, used=True):
+            steps.append(
+                {
+                    "title": title,
+                    "description": description,
+                    "image": self._ensure_bgr(image),
+                    "shape": f"{image.shape[1]} x {image.shape[0]} px",
+                    "used": used,
+                }
+            )
+
+        add("Recorte recibido", "Recorte actual generado por el detector de placa.", crop)
+        crop = self._ensure_bgr(crop)
+        add("Formato BGR", "Normaliza la imagen a 3 canales para que el modelo la reciba de forma consistente.", crop)
+
+        crop = self._trim_plate_border(crop)
+        add("Recorte de borde", "Retira un margen pequeno para reducir bordes de placa, fondo y ruido externo.", crop)
+
+        height, width = crop.shape[:2]
+        pad_x = max(4, int(width * 0.08))
+        pad_y = max(4, int(height * 0.18))
+        crop = cv2.copyMakeBorder(
+            crop,
+            pad_y,
+            pad_y,
+            pad_x,
+            pad_x,
+            cv2.BORDER_REPLICATE,
+        )
+        add("Padding replicado", "Agrega margen alrededor de la placa para que los caracteres no queden pegados al borde.", crop)
+
+        height, width = crop.shape[:2]
+        scale = max(1.0, 190 / max(1, height), 520 / max(1, width))
+        scale = min(scale, 4.0)
+        if scale > 1.0:
+            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        add("Escalado", f"Aumenta placas pequenas hasta un tamano util para OCR. Factor aplicado: {scale:.2f}x.", crop)
+
+        crop = self._gray_world_balance(crop)
+        add("Balance gray-world", "Corrige dominantes de color usando el promedio de los canales.", crop)
+
+        crop = cv2.bilateralFilter(crop, 5, 55, 55)
+        add("Filtro bilateral", "Reduce ruido conservando mejor los bordes de letras y numeros.", crop)
+
+        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        l_channel = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(l_channel)
+        crop = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+        add("CLAHE en luminancia", "Mejora contraste local sin depender tanto de la iluminacion global.", crop)
+
+        blur = cv2.GaussianBlur(crop, (0, 0), 1.0)
+        base = cv2.addWeighted(crop, 1.55, blur, -0.55, 0)
+        add("Acentuado de bordes", "Aplica enfoque por diferencia con desenfoque para resaltar detalles finos.", base)
+
+        gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
+        gray = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(8, 8)).apply(gray)
+        adaptive = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31,
+            7,
+        )
+        adaptive = cv2.morphologyEx(
+            adaptive,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
+            iterations=1,
+        )
+        high_contrast = cv2.convertScaleAbs(base, alpha=1.18, beta=8)
+        variants = [
+            ("Variante OCR base", "Imagen final mejorada que se usa como primera entrada al OCR.", base),
+            ("Variante alto contraste", "Refuerza contraste global con alpha/beta para letras suaves.", high_contrast),
+            ("Variante gris CLAHE", "Convierte a escala de grises con contraste local reforzado.", cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)),
+            ("Variante binaria adaptativa", "Binariza segun iluminacion local y cierra pequenos cortes con morfologia.", cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR)),
+        ]
+        for index, (title, description, image) in enumerate(variants):
+            add(title, description, image, used=index < self.max_variants)
+
+        return steps
+
     def _predict_chars(self, prepared):
         result = self.model.predict(
             source=prepared,

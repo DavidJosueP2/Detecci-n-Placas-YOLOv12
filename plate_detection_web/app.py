@@ -1,6 +1,8 @@
+import base64
 from pathlib import Path
 
 import cv2
+import numpy as np
 from flask import Flask, Response, jsonify, render_template, request, url_for
 from werkzeug.utils import secure_filename
 
@@ -120,6 +122,18 @@ def update_env_values(values):
     env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
 
 
+def jpeg_data_url(image, quality=82):
+    success, buffer = cv2.imencode(
+        ".jpg",
+        image,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)],
+    )
+    if not success:
+        return ""
+    encoded = base64.b64encode(buffer.tobytes()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
 def available_camera_sources():
     configured_source = Config.VIDEO_SOURCE if isinstance(Config.VIDEO_SOURCE, int) else 0
     cameras = []
@@ -179,6 +193,37 @@ def configuracion():
         active_page="configuracion",
         video_aspect_ratio=Config.VIDEO_ASPECT_RATIO,
         video_max_width=Config.VIDEO_MAX_WIDTH,
+    )
+
+
+@app.route("/ocr_detalle/<int:index>")
+def ocr_detalle(index):
+    status = stream.current_status()
+    detections = status.get("detections", [])
+    detection = detections[index] if 0 <= index < len(detections) else None
+    crop_bytes = stream.current_crop_at(index)
+    crop = cv2.imdecode(np.frombuffer(crop_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    steps = []
+    if plate_reader is not None and crop is not None:
+        for step in plate_reader.preprocessing_debug(crop):
+            steps.append(
+                {
+                    **step,
+                    "image_url": jpeg_data_url(step["image"]),
+                    "image": None,
+                }
+            )
+
+    return render_template(
+        "ocr_detalle.html",
+        active_page="foto_radar",
+        index=index,
+        detection=detection,
+        steps=steps,
+        reader_error=reader_error,
+        ocr_variants=Config.OCR_VARIANTS,
+        character_image_size=Config.CHARACTER_IMAGE_SIZE,
     )
 
 

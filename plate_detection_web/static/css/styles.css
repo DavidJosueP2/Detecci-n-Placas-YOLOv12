@@ -92,6 +92,27 @@
   padding: 18px;
 }
 
+.ocr-step {
+  overflow: hidden;
+  border: 1px solid #dbe3ee;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.ocr-step-media {
+  display: grid;
+  min-height: 190px;
+  place-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.ocr-step-media img {
+  max-height: 260px;
+  width: 100%;
+  object-fit: contain;
+}
+
 .plate-row {
   border-top: 1px solid #e2e8f0;
   padding: 14px 0;
