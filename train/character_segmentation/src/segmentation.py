@@ -166,11 +166,20 @@ def segment(
     stages["6_binary_otsu"] = binarized["otsu"]
     stages["7_binary_best"] = binary
 
+    # ── 3b. Isolate main character band ──────────────────────────────────────
+    # Zeros out rows that belong to ECUADOR text, plate border, screws, and
+    # any noise above/below the principal character row. Both projection and
+    # CC receive a clean single-band binary instead of the full noisy plate.
+    from . import projection as _proj_mod
+    binary = _proj_mod.isolate_text_band(binary)
+    stages["7b_band_isolated"] = binary
+    binary = _proj_mod.remove_small_blobs(binary)
+    stages["7c_cleaned"] = binary
+
     # ── 4. Projection segmentation ────────────────────────────────────────────
     proj_bboxes, _ = _try_method(binary, "projection")
 
-    from . import projection as _proj
-    proj_arr = _proj.smooth(_proj.compute(binary))
+    proj_arr = _proj_mod.smooth(_proj_mod.compute(binary))
     stages["8_projection"] = projection_image(proj_arr, height=60)
     stages["8b_projection_bboxes"] = draw_bboxes(
         prep["resized"], proj_bboxes, color=(0, 220, 0)

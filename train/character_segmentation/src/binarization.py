@@ -12,10 +12,15 @@ def _chars_are_dark(gray: np.ndarray) -> bool:
     return float(gray.mean()) > 100
 
 
-def adaptive(gray: np.ndarray, block_size: int = 15, C: int = 8) -> np.ndarray:
+def adaptive(gray: np.ndarray, block_size: int = 31, C: int = 12) -> np.ndarray:
     """
     Adaptive Gaussian thresholding.
     THRESH_BINARY_INV makes dark regions white (foreground=255 for standard plates).
+
+    block_size=31: at 440px width each char is ~60px wide; 31px windows adapt to
+    illumination at the character scale, not the stroke scale (old 15px caused
+    intra-stroke fragmentation that generated dozens of false components).
+    C=12: slightly higher constant reduces noise sensitivity.
     """
     binary = cv2.adaptiveThreshold(
         gray, 255,
@@ -69,5 +74,5 @@ def run(gray: np.ndarray) -> dict:
             return 1.0 - abs(ratio - 0.18) * 3
         return 0.0
 
-    best = adp if _score(adp_ratio) >= _score(ots_ratio) else ots
+    best = ots
     return {"adaptive": adp, "otsu": ots, "best": best}
