@@ -203,6 +203,48 @@ def _build_pieces(
     return pieces
 
 
+# ── Geometric noise filter ────────────────────────────────────────────────────
+
+def filter_noise_bboxes(bboxes: list[dict]) -> list[dict]:
+    """
+    Removes geometrically implausible bboxes before any merge is attempted.
+
+    Targets ECUADOR residue, border fragments, and screw components that
+    inflate the count beyond expected — causing merge_nearby to kick in
+    with increasingly wide thresholds that then fuse valid characters.
+
+    Two criteria (both must hold to KEEP a bbox):
+      1. Height >= 30% of median height.
+         Handles small residue from ECUADOR text or border slivers.
+         30% is safe even under 4× perspective scaling: if the largest
+         char is 80px and the smallest is 30px, median ≈ 55px → min = 16px.
+         ECUADOR chars are typically < 15px tall after band isolation.
+
+      2. Vertical center within 1.5 × median_height from the band's
+         median center Y.
+         Handles components that survived band isolation but are vertically
+         displaced (top-border fragment, bottom noise).
+    """
+    if len(bboxes) <= 2:
+        return bboxes
+
+    med_h = _median_h(bboxes)
+    centers_y = [b["y"] + b["h"] / 2.0 for b in bboxes]
+    median_cy = float(np.median(centers_y))
+
+    result = []
+    for b in bboxes:
+        if b["h"] < med_h * 0.30:
+            continue
+        cy = b["y"] + b["h"] / 2.0
+        if abs(cy - median_cy) > med_h * 1.5:
+            continue
+        result.append(b)
+
+    # Safety: never return empty — if filter removes everything, keep original
+    return result if result else bboxes
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def confidence_score(n: int, expected: int = EXPECTED) -> float:
@@ -222,7 +264,6 @@ def validate_and_fix(
 ) -> tuple[list[dict], float, str]:
     """
     Returns (fixed_bboxes, confidence, note).
-    Applies at most one round of merge or split.
     """
     if not bboxes:
         return [], 0.0, "no_detections"
@@ -235,13 +276,45 @@ def validate_and_fix(
         return bboxes, 1.0, "exact"
 
     if n > expected:
-        # Progressive merging: tighten gap threshold until count matches
-        for factor in (0.35, 0.55, 0.80, 1.20):
+        # Step 1: remove noise geometrically BEFORE any merge.
+        # If CC already found the right chars + a few noise blobs, this
+        # resolves the count without touching valid characters at all.
+        filtered = filter_noise_bboxes(bboxes)
+        filtered = sort_by_x(filtered)
+        if len(filtered) == expected:
+            return filtered, 1.0, "noise_filtered"
+        if expected <= len(filtered) < n:
+            # Noise filter reduced count but didn't reach target — work with
+            # the cleaner set for any subsequent merge
+            bboxes = filtered
+            n = len(bboxes)
+
+        if n == expected:
+            return bboxes, 1.0, "exact_after_filter"
+
+        # Step 2: merge only with TIGHT thresholds (max 0.35 × median_w).
+        # The old loop went up to 1.20 × median_w which is wider than the
+        # inter-character gap and fused valid adjacent characters.
+        for factor in (0.20, 0.35):
             gap = _median_w(bboxes) * factor
             merged = merge_nearby(bboxes, gap)
-            if len(merged) <= expected:
-                return merged, confidence_score(len(merged), expected), f"merged_{factor}"
-        return bboxes[:expected], confidence_score(expected, expected), "truncated"
+            if len(merged) == expected:
+                return merged, 1.0, f"merged_{factor}"
+            if len(merged) < expected:
+                # Merged too far — use previous (less merged) result
+                break
+
+        # Step 3: if still over expected, keep the N boxes closest to the
+        # band center (drop outliers, not adjacent characters).
+        if n > expected:
+            med_cy = float(np.median([b["y"] + b["h"] / 2.0 for b in bboxes]))
+            bboxes_sorted_by_dist = sorted(
+                bboxes, key=lambda b: abs(b["y"] + b["h"] / 2.0 - med_cy)
+            )
+            kept = sort_by_x(bboxes_sorted_by_dist[:expected])
+            return kept, confidence_score(len(kept), expected), "trimmed_outliers"
+
+        return bboxes, confidence_score(n, expected), "best_effort"
 
     # n < expected: try splitting wide boxes
     fixed = split_wide(binary, bboxes, expected)
