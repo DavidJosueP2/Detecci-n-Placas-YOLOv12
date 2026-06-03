@@ -31,7 +31,8 @@ def process_frame(frame, detections, speed_lines=None, stats=None):
         cv2.rectangle(output, (x1, y1), (x2, y2), BOX_COLOR, 2, cv2.LINE_AA)
         draw_label(output, detection, x1, y1, width)
 
-        crop = frame[y1:y2, x1:x2].copy()
+        snapshot_crop = detection.get("_snapshot_crop")
+        crop = snapshot_crop.copy() if snapshot_crop is not None else frame[y1:y2, x1:x2].copy()
         crops.append({"detection": detection, "crop": crop})
 
     if not detections:
@@ -129,13 +130,21 @@ def draw_stats_overlay(image, stats):
         return
 
     rows = [
-        f"FPS {stats.get('fps', 0.0):.1f}",
+        f"Visor {stats.get('fps', 0.0):.1f} fps",
         f"YOLO {stats.get('detector_ms', 0.0):.0f} ms",
+        f"Det {stats.get('detection_fps', 0.0):.1f}/s",
         f"Placas {stats.get('detections', 0)}",
     ]
+    capture_width = int(stats.get("capture_width") or 0)
+    capture_height = int(stats.get("capture_height") or 0)
+    if capture_width and capture_height:
+        rows.append(f"Entrada {capture_width}x{capture_height}")
     source_fps = stats.get("source_fps", 0.0)
     if source_fps:
-        rows.append(f"Video {source_fps:.1f} fps")
+        rows.append(f"Fuente {source_fps:.1f} fps")
+    mode = stats.get("detection_mode")
+    if mode:
+        rows.append(f"Modo {mode}")
     speed_status = stats.get("speed_status")
     if speed_status:
         rows.append(str(speed_status)[:24])
@@ -144,7 +153,7 @@ def draw_stats_overlay(image, stats):
     font_scale = 0.48
     line_height = 22
     padding = 10
-    width = 178
+    width = 214
     height = padding * 2 + line_height * len(rows)
     x2 = image.shape[1] - 12
     y1 = 12
@@ -161,8 +170,9 @@ def draw_stats_overlay(image, stats):
         cv2.putText(image, row, (x1 + padding, y), font, font_scale, (226, 232, 240), 1, cv2.LINE_AA)
 
 
-def encode_jpeg(image):
-    success, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 78])
+def encode_jpeg(image, quality=68):
+    quality = int(clamp(quality, 35, 95))
+    success, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     if not success:
         return None
     return buffer.tobytes()

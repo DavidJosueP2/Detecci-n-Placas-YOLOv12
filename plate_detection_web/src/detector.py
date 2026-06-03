@@ -2,6 +2,8 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
+from src.device import device_label, resolve_inference_device
+
 
 class PlateDetector:
     def __init__(
@@ -16,7 +18,8 @@ class PlateDetector:
         self.model_path = Path(model_path).expanduser().resolve()
         self.confidence_threshold = confidence_threshold
         self.image_size = image_size
-        self.device = None if device == "auto" else device
+        self.device = resolve_inference_device(device)
+        self.device_label = device_label(self.device)
         self.tracker = tracker
         self.iou_threshold = iou_threshold
 
