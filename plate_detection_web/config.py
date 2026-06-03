@@ -17,9 +17,28 @@ def load_env_file(path):
 
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        value = clean_env_value(value)
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+def clean_env_value(value):
+    value = value.strip()
+    quote = None
+
+    for index, char in enumerate(value):
+        if char in {"'", '"'}:
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            continue
+
+        if char == "#" and quote is None:
+            value = value[:index].strip()
+            break
+
+    return value.strip().strip('"').strip("'")
 
 
 load_env_file(PROJECT_ROOT / ".env")
@@ -117,7 +136,8 @@ class Config:
     STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "12"))
     STREAM_MAX_WIDTH = int(os.getenv("STREAM_MAX_WIDTH", "960"))
     DETECTION_EVERY_N_FRAMES = int(os.getenv("DETECTION_EVERY_N_FRAMES", "6"))
-    LIVE_DETECTION_INTERVAL_SECONDS = float(os.getenv("LIVE_DETECTION_INTERVAL_SECONDS", "0.25"))
+    LIVE_DETECTION_INTERVAL_SECONDS = float(os.getenv("LIVE_DETECTION_INTERVAL_SECONDS", "0.0"))
+    LIVE_DETECTION_MODE = os.getenv("LIVE_DETECTION_MODE", "detect")
     OCR_INTERVAL_SECONDS = float(os.getenv("OCR_INTERVAL_SECONDS", "1.25"))
     OCR_RETRY_INTERVAL_SECONDS = float(os.getenv("OCR_RETRY_INTERVAL_SECONDS", "0.30"))
     OCR_MAX_PLATES_PER_FRAME = int(os.getenv("OCR_MAX_PLATES_PER_FRAME", "1"))
@@ -126,7 +146,7 @@ class Config:
     VIDEO_ASPECT_RATIO = os.getenv("VIDEO_ASPECT_RATIO", "16 / 9")
     VIDEO_MAX_WIDTH = os.getenv("VIDEO_MAX_WIDTH", "860px")
     CAMERA_SCAN_LIMIT = int(os.getenv("CAMERA_SCAN_LIMIT", "10"))
-    CAMERA_BACKEND = os.getenv("CAMERA_BACKEND", "dshow")
+    CAMERA_BACKEND = os.getenv("CAMERA_BACKEND", "msmf")
     CAMERA_WIDTH = int(os.getenv("CAMERA_WIDTH", "640"))
     CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "480"))
     CAMERA_FPS = float(os.getenv("CAMERA_FPS", "30"))

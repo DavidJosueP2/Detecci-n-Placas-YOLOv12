@@ -1,4 +1,5 @@
 import base64
+from threading import Lock, Thread
 from pathlib import Path
 
 import cv2
@@ -69,6 +70,7 @@ stream = VideoStream(
     stream_max_width=Config.STREAM_MAX_WIDTH,
     detection_every_n_frames=Config.DETECTION_EVERY_N_FRAMES,
     live_detection_interval_seconds=Config.LIVE_DETECTION_INTERVAL_SECONDS,
+    live_detection_mode=Config.LIVE_DETECTION_MODE,
     ocr_interval_seconds=Config.OCR_INTERVAL_SECONDS,
     ocr_retry_interval_seconds=Config.OCR_RETRY_INTERVAL_SECONDS,
     ocr_max_plates_per_frame=Config.OCR_MAX_PLATES_PER_FRAME,
@@ -83,6 +85,11 @@ stream = VideoStream(
 )
 
 
+camera_sources_cache = None
+camera_sources_scan_running = False
+camera_sources_lock = Lock()
+
+
 SPEED_CONFIG_ENV_KEYS = {
     "line_a_left_y": "SPEED_LINE_A_LEFT_Y",
     "line_a_right_y": "SPEED_LINE_A_RIGHT_Y",
@@ -92,6 +99,72 @@ SPEED_CONFIG_ENV_KEYS = {
     "roi_x2": "SPEED_ROI_X2",
     "distance_meters": "SPEED_DISTANCE_METERS",
 }
+
+
+def camera_backend_candidates():
+    backends = {
+        "msmf": cv2.CAP_MSMF,
+        "any": cv2.CAP_ANY,
+        "auto": cv2.CAP_ANY,
+    }
+    preferred = backends.get(str(Config.CAMERA_BACKEND).strip().lower(), cv2.CAP_MSMF)
+    ordered = [preferred, cv2.CAP_MSMF, cv2.CAP_ANY]
+    unique = []
+    for backend in ordered:
+        if backend not in unique:
+            unique.append(backend)
+    return unique
+
+
+def fallback_camera_sources():
+    configured_source = Config.VIDEO_SOURCE if isinstance(Config.VIDEO_SOURCE, int) else 0
+    values = list(range(max(2, Config.CAMERA_SCAN_LIMIT)))
+    if configured_source not in values:
+        values.insert(0, configured_source)
+    return [{"type": "camera", "value": value, "label": f"Camara {value}"} for value in values]
+
+
+def scan_camera_sources():
+    global camera_sources_cache, camera_sources_scan_running
+
+    cameras = fallback_camera_sources()
+    try:
+        discovered = []
+        backends = camera_backend_candidates()
+
+        for index in range(Config.CAMERA_SCAN_LIMIT):
+            opened = False
+            for backend in backends:
+                capture = cv2.VideoCapture(index, backend)
+                opened = capture.isOpened()
+                capture.release()
+                if opened:
+                    break
+
+            if opened:
+                discovered.append({"type": "camera", "value": index, "label": f"Camara {index}"})
+
+        if discovered:
+            known_values = {item["value"] for item in discovered}
+            for fallback in fallback_camera_sources():
+                if fallback["value"] not in known_values:
+                    discovered.append(fallback)
+            cameras = sorted(discovered, key=lambda item: int(item["value"]))
+    finally:
+        with camera_sources_lock:
+            camera_sources_cache = cameras
+            camera_sources_scan_running = False
+
+
+def start_camera_scan_if_needed():
+    global camera_sources_scan_running
+
+    with camera_sources_lock:
+        if camera_sources_scan_running:
+            return
+        camera_sources_scan_running = True
+
+    Thread(target=scan_camera_sources, daemon=True).start()
 
 
 def update_env_values(values):
@@ -135,26 +208,14 @@ def jpeg_data_url(image, quality=82):
 
 
 def available_camera_sources():
-    configured_source = Config.VIDEO_SOURCE if isinstance(Config.VIDEO_SOURCE, int) else 0
-    cameras = []
-    backends = (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY)
+    with camera_sources_lock:
+        cached = [dict(item) for item in camera_sources_cache] if camera_sources_cache else None
 
-    for index in range(Config.CAMERA_SCAN_LIMIT):
-        opened = False
-        for backend in backends:
-            capture = cv2.VideoCapture(index, backend)
-            opened = capture.isOpened()
-            capture.release()
-            if opened:
-                break
+    if cached is not None:
+        return cached
 
-        if opened or index == configured_source:
-            cameras.append({"type": "camera", "value": index, "label": f"Camara {index}"})
-
-    if not cameras:
-        cameras.append({"type": "camera", "value": configured_source, "label": f"Camara {configured_source}"})
-
-    return cameras
+    start_camera_scan_if_needed()
+    return fallback_camera_sources()
 
 
 @app.route("/")

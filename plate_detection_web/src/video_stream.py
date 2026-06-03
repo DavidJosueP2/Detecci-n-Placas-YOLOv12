@@ -38,6 +38,7 @@ class VideoStream:
         stream_max_width=960,
         detection_every_n_frames=6,
         live_detection_interval_seconds=0.12,
+        live_detection_mode="detect",
         ocr_interval_seconds=1.25,
         ocr_retry_interval_seconds=0.30,
         ocr_max_plates_per_frame=1,
@@ -60,6 +61,9 @@ class VideoStream:
         self.stream_max_width = max(0, int(stream_max_width))
         self.detection_every_n_frames = max(1, int(detection_every_n_frames))
         self.live_detection_interval_seconds = max(0.0, float(live_detection_interval_seconds))
+        self.live_detection_mode = str(live_detection_mode or "detect").strip().lower()
+        if self.live_detection_mode not in {"detect", "track"}:
+            self.live_detection_mode = "detect"
         self.ocr_interval_seconds = max(0.0, float(ocr_interval_seconds))
         self.ocr_retry_interval_seconds = max(0.0, float(ocr_retry_interval_seconds))
         self.ocr_max_plates_per_frame = max(0, int(ocr_max_plates_per_frame))
@@ -72,10 +76,16 @@ class VideoStream:
         self.incident_service = incident_service
         self.source_fps = 0.0
         self.display_fps = 0.0
+        self.detection_fps = 0.0
         self.detector_ms = 0.0
+        self.capture_width = 0
+        self.capture_height = 0
+        self.capture_backend = ""
         self.last_live_detection_submitted_at = 0.0
+        self.last_detection_completed_at = 0.0
         self.last_frame_started_at = 0.0
         self.lock = Lock()
+        self.track_lock = Lock()
         self.speed_estimator = SpeedEstimator(
             line_a_y=speed_line_a_y,
             line_b_y=speed_line_b_y,
@@ -184,7 +194,8 @@ class VideoStream:
                 self.last_ocr_attempts.clear()
                 self.last_ocr_attempt_at = 0.0
                 self.last_detections = []
-                self.lightweight_tracks.clear()
+                with self.track_lock:
+                    self.lightweight_tracks.clear()
                 self.next_track_id = 1
                 self.pending_ocr.clear()
                 last_emit_time = 0.0
@@ -206,7 +217,8 @@ class VideoStream:
                     self.last_ocr_attempts.clear()
                     self.last_ocr_attempt_at = 0.0
                     self.last_detections = []
-                    self.lightweight_tracks.clear()
+                    with self.track_lock:
+                        self.lightweight_tracks.clear()
                     self.next_track_id = 1
                     self.pending_ocr.clear()
                     last_emit_time = 0.0
@@ -217,6 +229,7 @@ class VideoStream:
                 continue
 
             timestamp = self._frame_timestamp(capture, source)
+            self._update_frame_capture_info(frame, source)
             display_position = timestamp if isinstance(source, str) else 0.0
             with self.lock:
                 self.position_seconds = display_position
@@ -234,6 +247,7 @@ class VideoStream:
                 self.detector_ms = (time.monotonic() - detector_started_at) * 1000
                 detections = self._enrich_detections(frame, detections, timestamp)
                 self.last_detections = detections
+                self._mark_detection_completed()
             else:
                 if isinstance(source, str):
                     self._collect_ocr_results()
@@ -295,11 +309,15 @@ class VideoStream:
             self.speed_estimator.reset()
             self.plate_memory.clear()
             self.last_detections = []
-            self.lightweight_tracks.clear()
+            with self.track_lock:
+                self.lightweight_tracks.clear()
             self.next_track_id = 1
             self.pending_ocr.clear()
             self.pending_detection = None
             self.pending_detection_version = None
+            self.detection_fps = 0.0
+            self.detector_ms = 0.0
+            self.last_detection_completed_at = 0.0
             self.last_ocr_attempts.clear()
             self.last_ocr_attempt_at = 0.0
             self.status.update(
@@ -417,7 +435,10 @@ class VideoStream:
 
     def _camera_backend_candidates(self):
         preferred = self._camera_backend_value()
-        return [preferred, cv2.CAP_MSMF, cv2.CAP_ANY, cv2.CAP_DSHOW]
+        candidates = [preferred, cv2.CAP_MSMF, cv2.CAP_ANY]
+        if self.camera_backend in {"dshow", "directshow"}:
+            candidates.append(cv2.CAP_DSHOW)
+        return candidates
 
     def _camera_backend_value(self):
         backends = {
@@ -448,6 +469,9 @@ class VideoStream:
         duration = frame_count / fps if frame_count > 0 and fps > 0 else 0.0
         with self.lock:
             self.source_fps = fps if fps > 0 else 0.0
+            self.capture_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            self.capture_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self.capture_backend = self._capture_backend_name(capture)
             self.duration_seconds = duration if isinstance(source, str) else 0.0
             self.is_seekable = isinstance(source, str) and duration > 0
             self.status["duration_seconds"] = self.duration_seconds
@@ -496,6 +520,28 @@ class VideoStream:
         fps = 1.0 / elapsed
         self.display_fps = fps if self.display_fps <= 0 else self.display_fps * 0.8 + fps * 0.2
 
+    def _update_frame_capture_info(self, frame, source):
+        height, width = frame.shape[:2]
+        with self.lock:
+            self.capture_width = width
+            self.capture_height = height
+            self.is_seekable = isinstance(source, str) and self.duration_seconds > 0
+
+    @staticmethod
+    def _capture_backend_name(capture):
+        try:
+            return capture.getBackendName()
+        except Exception:
+            return ""
+
+    def _mark_detection_completed(self):
+        now = time.monotonic()
+        if self.last_detection_completed_at > 0:
+            elapsed = max(0.001, now - self.last_detection_completed_at)
+            fps = 1.0 / elapsed
+            self.detection_fps = fps if self.detection_fps <= 0 else self.detection_fps * 0.75 + fps * 0.25
+        self.last_detection_completed_at = now
+
     def _frame_stats(self, detections, best_detection):
         speed_status = None
         if best_detection is not None:
@@ -508,11 +554,26 @@ class VideoStream:
         return {
             "fps": self.display_fps,
             "source_fps": self.source_fps,
+            "detection_fps": self.detection_fps,
             "detector_ms": self.detector_ms,
             "detections": len(detections or []),
-            "tracks": len(self.lightweight_tracks),
+            "tracks": self._lightweight_track_count(),
             "speed_status": speed_status,
+            "capture_width": self.capture_width,
+            "capture_height": self.capture_height,
+            "capture_backend": self.capture_backend,
+            "detection_mode": self._detection_mode_label(),
+            "live_interval_seconds": self.live_detection_interval_seconds,
         }
+
+    def _lightweight_track_count(self):
+        with self.track_lock:
+            return len(self.lightweight_tracks)
+
+    def _detection_mode_label(self):
+        if self.live_detection_mode == "track":
+            return "track"
+        return "detect"
 
     @staticmethod
     def _best_detection_for_stats(detections):
@@ -548,6 +609,7 @@ class VideoStream:
             frame.copy(),
             source,
             timestamp,
+            capture_version,
         )
 
     def _collect_async_detection(self, capture_version):
@@ -569,43 +631,62 @@ class VideoStream:
 
         self.detector_ms = detector_ms
         self.last_detections = detections
+        self._mark_detection_completed()
 
-    def _detect_and_enrich_frame(self, frame, source, timestamp):
+    def _detect_and_enrich_frame(self, frame, source, timestamp, capture_version):
         detector_started_at = time.monotonic()
-        detections = self._detect_frame(frame, source, timestamp)
+        detections = self._detect_raw_frame(frame, source)
         detector_ms = (time.monotonic() - detector_started_at) * 1000
+
+        if not self._is_capture_version_current(capture_version):
+            return [], detector_ms
+
+        if self._should_assign_lightweight_tracks(source):
+            detections = self._assign_lightweight_track_ids(detections, timestamp)
         detections = self._enrich_detections(frame, detections, timestamp)
         return detections, detector_ms
 
     def _detect_frame(self, frame, source, timestamp):
-        if not isinstance(source, str):
-            return self.detector.track(frame)
+        detections = self._detect_raw_frame(frame, source)
+        if self._should_assign_lightweight_tracks(source):
+            return self._assign_lightweight_track_ids(detections, timestamp)
+        return detections
 
-        detections = self.detector.detect(frame)
-        return self._assign_lightweight_track_ids(detections, timestamp)
+    def _detect_raw_frame(self, frame, source):
+        if not isinstance(source, str) and self.live_detection_mode == "track":
+            return self.detector.track(frame)
+        return self.detector.detect(frame)
+
+    def _should_assign_lightweight_tracks(self, source):
+        return isinstance(source, str) or self.live_detection_mode != "track"
+
+    def _is_capture_version_current(self, capture_version):
+        with self.lock:
+            return capture_version == self.source_version
 
     def _assign_lightweight_track_ids(self, detections, timestamp):
-        used_tracks = set()
-        for detection in sorted(
-            detections,
-            key=lambda item: item.get("confidence", 0.0),
-            reverse=True,
-        ):
-            track_id = self._match_lightweight_track(detection, used_tracks)
-            if track_id is None:
-                track_id = self.next_track_id
-                self.next_track_id += 1
+        with self.track_lock:
+            used_tracks = set()
+            for detection in sorted(
+                detections,
+                key=lambda item: item.get("confidence", 0.0),
+                reverse=True,
+            ):
+                track_id = self._match_lightweight_track(detection, used_tracks)
+                if track_id is None:
+                    track_id = self.next_track_id
+                    self.next_track_id += 1
 
-            detection["track_id"] = track_id
-            used_tracks.add(track_id)
-            self.lightweight_tracks[track_id] = {
-                "box": self._box_tuple(detection),
-                "center": self._center(detection),
-                "timestamp": timestamp,
-                "seen_at": time.monotonic(),
-            }
+                detection["track_id"] = track_id
+                used_tracks.add(track_id)
+                self.lightweight_tracks[track_id] = {
+                    "box": self._box_tuple(detection),
+                    "center": self._center(detection),
+                    "timestamp": timestamp,
+                    "seen_at": time.monotonic(),
+                }
 
-        self._prune_lightweight_tracks()
+            self._prune_lightweight_tracks()
         return detections
 
     def _match_lightweight_track(self, detection, used_tracks):
@@ -684,6 +765,10 @@ class VideoStream:
                 timestamp=timestamp,
                 frame_shape=frame.shape,
             )
+            snapshot_crop = self._crop_detection(frame, detection)
+            if snapshot_crop is not None:
+                detection["_snapshot_crop"] = snapshot_crop
+                detection["_snapshot_timestamp"] = timestamp
 
             plate_text = ""
             plate_text_confidence = 0.0
@@ -695,8 +780,7 @@ class VideoStream:
                 plate_chars = cached.get("characters", [])
 
             if id(detection) in ocr_candidates and self._should_run_ocr(detection):
-                crop = self._crop_detection(frame, detection)
-                self._submit_ocr(detection, crop)
+                self._submit_ocr(detection, snapshot_crop)
 
             plate_text, plate_text_confidence, plate_chars = self._stabilize_plate_text(
                 detection,

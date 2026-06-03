@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from src.device import device_label, resolve_inference_device
+
 
 class PlateReader:
     def __init__(
@@ -18,7 +20,8 @@ class PlateReader:
         self.model_path = Path(model_path).expanduser().resolve()
         self.confidence_threshold = confidence_threshold
         self.image_size = image_size
-        self.device = None if device == "auto" else device
+        self.device = resolve_inference_device(device)
+        self.device_label = device_label(self.device)
         self.max_variants = max(1, int(max_variants))
 
         if not self.model_path.exists():
@@ -60,7 +63,7 @@ class PlateReader:
 
         steps = []
 
-        def add(title, description, image, used=True):
+        def add(title, description, image, used=None):
             steps.append(
                 {
                     "title": title,
@@ -76,66 +79,39 @@ class PlateReader:
         add("Formato BGR", "Normaliza la imagen a 3 canales para que el modelo la reciba de forma consistente.", crop)
 
         crop = self._trim_plate_border(crop)
-        add("Recorte de borde", "Retira un margen pequeno para reducir bordes de placa, fondo y ruido externo.", crop)
+        add("Recorte de borde", "Retira solo un margen minimo para no cortar letras reales.", crop)
 
-        height, width = crop.shape[:2]
-        pad_x = max(4, int(width * 0.08))
-        pad_y = max(4, int(height * 0.18))
-        crop = cv2.copyMakeBorder(
-            crop,
-            pad_y,
-            pad_y,
-            pad_x,
-            pad_x,
-            cv2.BORDER_REPLICATE,
-        )
-        add("Padding replicado", "Agrega margen alrededor de la placa para que los caracteres no queden pegados al borde.", crop)
+        crop = self._pad_plate_crop(crop)
+        add("Padding suave", "Agrega margen replicado para que las letras no queden pegadas al borde.", crop)
 
-        height, width = crop.shape[:2]
-        scale = max(1.0, 190 / max(1, height), 520 / max(1, width))
-        scale = min(scale, 4.0)
-        if scale > 1.0:
-            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        add("Escalado", f"Aumenta placas pequenas hasta un tamano util para OCR. Factor aplicado: {scale:.2f}x.", crop)
+        crop, scale = self._scale_plate_crop(crop)
+        add("Escalado moderado", f"Aumenta placas pequenas sin forzar demasiado la imagen. Factor aplicado: {scale:.2f}x.", crop)
 
-        crop = self._gray_world_balance(crop)
-        add("Balance gray-world", "Corrige dominantes de color usando el promedio de los canales.", crop)
+        crop = self._smooth_plate_crop(crop)
+        add("Suavizado real", "Reduce ruido y compresion de video antes de tocar contraste o bordes.", crop)
 
-        crop = cv2.bilateralFilter(crop, 5, 55, 55)
-        add("Filtro bilateral", "Reduce ruido conservando mejor los bordes de letras y numeros.", crop)
+        crop = self._moderate_luminance_clahe(crop)
+        add("Contraste local moderado", "Mejora la luminancia de forma suave sin cambiar agresivamente el color.", crop)
 
-        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
-        l_channel, a_channel, b_channel = cv2.split(lab)
-        l_channel = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(l_channel)
-        crop = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
-        add("CLAHE en luminancia", "Mejora contraste local sin depender tanto de la iluminacion global.", crop)
+        base = self._soft_sharpen(crop)
+        add("Enfoque suave", "Recupera un poco los contornos despues del suavizado sin fabricar bordes duros.", base)
 
-        blur = cv2.GaussianBlur(crop, (0, 0), 1.0)
-        base = cv2.addWeighted(crop, 1.55, blur, -0.55, 0)
-        add("Acentuado de bordes", "Aplica enfoque por diferencia con desenfoque para resaltar detalles finos.", base)
-
-        gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
-        gray = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(8, 8)).apply(gray)
-        adaptive = cv2.adaptiveThreshold(
-            gray,
+        gray_variant = self._gray_ocr_variant(base)
+        high_contrast = cv2.convertScaleAbs(base, alpha=1.06, beta=2)
+        diagnostic_gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
+        diagnostic_binary = cv2.adaptiveThreshold(
+            diagnostic_gray,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
             31,
-            7,
+            5,
         )
-        adaptive = cv2.morphologyEx(
-            adaptive,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
-            iterations=1,
-        )
-        high_contrast = cv2.convertScaleAbs(base, alpha=1.18, beta=8)
         variants = [
-            ("Variante OCR base", "Imagen final mejorada que se usa como primera entrada al OCR.", base),
-            ("Variante alto contraste", "Refuerza contraste global con alpha/beta para letras suaves.", high_contrast),
-            ("Variante gris CLAHE", "Convierte a escala de grises con contraste local reforzado.", cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)),
-            ("Variante binaria adaptativa", "Binariza segun iluminacion local y cierra pequenos cortes con morfologia.", cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR)),
+            ("Variante OCR base", "Imagen final conservadora que se usa como primera entrada al OCR.", base),
+            ("Variante OCR gris suavizada", "Escala de grises con suavizado y contraste local moderado.", gray_variant),
+            ("Variante contraste suave", "Ligero aumento global de contraste; solo entra al OCR si se piden mas variantes.", high_contrast),
+            ("Referencia binaria", "Binarizacion solo para diagnostico visual; no es la entrada principal recomendada.", cv2.cvtColor(diagnostic_binary, cv2.COLOR_GRAY2BGR)),
         ]
         for index, (title, description, image) in enumerate(variants):
             add(title, description, image, used=index < self.max_variants)
@@ -197,44 +173,31 @@ class PlateReader:
 
     def _prepare_variants(self, crop):
         base = self._prepare_base_crop(crop)
-        gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
-        gray = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(8, 8)).apply(gray)
-
-        adaptive = cv2.adaptiveThreshold(
-            gray,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            31,
-            7,
-        )
-        adaptive = cv2.morphologyEx(
-            adaptive,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
-            iterations=1,
-        )
-
-        high_contrast = cv2.convertScaleAbs(base, alpha=1.18, beta=8)
-        gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        adaptive_bgr = cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR)
+        gray_bgr = self._gray_ocr_variant(base)
+        high_contrast = cv2.convertScaleAbs(base, alpha=1.06, beta=2)
 
         variants = [
             {"image": base, "weight": 1.0},
-            {"image": high_contrast, "weight": 0.95},
             {"image": gray_bgr, "weight": 0.9},
-            {"image": adaptive_bgr, "weight": 0.45},
+            {"image": high_contrast, "weight": 0.65},
         ]
         return variants[: self.max_variants]
 
     def _prepare_base_crop(self, crop):
         crop = self._ensure_bgr(crop)
         crop = self._trim_plate_border(crop)
-        height, width = crop.shape[:2]
+        crop = self._pad_plate_crop(crop)
+        crop, _ = self._scale_plate_crop(crop)
+        crop = self._smooth_plate_crop(crop)
+        crop = self._moderate_luminance_clahe(crop)
+        return self._soft_sharpen(crop)
 
-        pad_x = max(4, int(width * 0.08))
-        pad_y = max(4, int(height * 0.18))
-        crop = cv2.copyMakeBorder(
+    @staticmethod
+    def _pad_plate_crop(crop):
+        height, width = crop.shape[:2]
+        pad_x = max(3, int(width * 0.06))
+        pad_y = max(3, int(height * 0.12))
+        return cv2.copyMakeBorder(
             crop,
             pad_y,
             pad_y,
@@ -243,23 +206,38 @@ class PlateReader:
             cv2.BORDER_REPLICATE,
         )
 
+    @staticmethod
+    def _scale_plate_crop(crop):
         height, width = crop.shape[:2]
-        scale = max(1.0, 190 / max(1, height), 520 / max(1, width))
-        scale = min(scale, 4.0)
-        if scale > 1.0:
+        scale = max(1.0, 120 / max(1, height), 360 / max(1, width))
+        scale = min(scale, 3.0)
+        if scale > 1.05:
             crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        return crop, scale
 
-        crop = self._gray_world_balance(crop)
-        crop = cv2.bilateralFilter(crop, 5, 55, 55)
+    @staticmethod
+    def _smooth_plate_crop(crop):
+        crop = cv2.GaussianBlur(crop, (3, 3), 0)
+        return cv2.bilateralFilter(crop, 5, 24, 24)
 
+    @staticmethod
+    def _moderate_luminance_clahe(crop):
         lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
         l_channel, a_channel, b_channel = cv2.split(lab)
-        l_channel = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(l_channel)
-        crop = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+        l_channel = cv2.createCLAHE(clipLimit=1.6, tileGridSize=(8, 8)).apply(l_channel)
+        return cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
 
-        blur = cv2.GaussianBlur(crop, (0, 0), 1.0)
-        crop = cv2.addWeighted(crop, 1.55, blur, -0.55, 0)
-        return crop
+    @staticmethod
+    def _soft_sharpen(crop):
+        blur = cv2.GaussianBlur(crop, (0, 0), 0.8)
+        return cv2.addWeighted(crop, 1.18, blur, -0.18, 0)
+
+    @staticmethod
+    def _gray_ocr_variant(crop):
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        gray = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(gray)
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
     @staticmethod
     def _ensure_bgr(crop):
