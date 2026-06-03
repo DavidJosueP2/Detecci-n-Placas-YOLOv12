@@ -206,6 +206,21 @@ def segment(
     # ── 6. Validate & fix ─────────────────────────────────────────────────────
     fixed, confidence, note = validation.validate_and_fix(bboxes, binary, expected_chars)
 
+    # Clip all bbox coordinates to valid image bounds.
+    # Splits and merges can produce x<0 or x+w > img_w on extreme-perspective
+    # plates; crop_char handles this internally but visualization and the
+    # returned bbox list should carry valid coordinates.
+    img_h_px, img_w_px = gray.shape[:2]
+    clipped = []
+    for b in fixed:
+        x = max(0, b["x"])
+        y = max(0, b["y"])
+        x2 = min(img_w_px, b["x"] + b["w"])
+        y2 = min(img_h_px, b["y"] + b["h"])
+        if x2 - x > 1 and y2 - y > 1:
+            clipped.append({"x": x, "y": y, "w": x2 - x, "h": y2 - y})
+    fixed = clipped if clipped else fixed
+
     stages["10_final_bboxes"] = draw_bboxes(
         prep["resized"], fixed, color=(0, 255, 100), thickness=2, label_idx=True
     )

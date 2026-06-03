@@ -132,152 +132,117 @@ def segment(binary: np.ndarray) -> list[dict]:
     return bboxes_from_regions(binary, regions)
 
 
-def remove_small_blobs(binary: np.ndarray, keep_ratio: float = 0.12) -> np.ndarray:
+def remove_small_blobs(binary: np.ndarray, height_ratio: float = 0.25) -> np.ndarray:
     """
+    Removes connected components whose height is below height_ratio × reference height.
 
-    Removes components smaller than keep_ratio × median_area_of_largest_components.
+    WHY height-based instead of area-based:
 
+    Area-based calibration (previous versions) fails in two opposite directions:
+      - Fixed area ratio (0.005×image): removes ECUADOR chars on standard plates ✓,
+        but also removes valid chars on extreme-perspective plates where right-side
+        chars can be 3× smaller in area.
+      - Adaptive area (keep_ratio × median): median is contaminated when isolate_text_band
+        includes ECUADOR in the band — ECUADOR chars inflate the component count, pull
+        down the median, and the threshold becomes too low to filter anything.
 
+    Height-based calibration avoids both failure modes:
+      - Reference = height of the LARGEST-AREA component (always a main char, never
+        ECUADOR: a main char is both taller and wider than an ECUADOR char, so it
+        always dominates by area).
+      - Keep: height ≥ height_ratio × ref_height.
 
-    WHY adaptive instead of fixed threshold:
+    Typical values:
+      - Main char (frontal plate): 50-80px → kept ✓
+      - Main char (extreme perspective, smallest): 0.30-0.40 × tallest → kept ✓
+      - ECUADOR char: 0.15-0.22 × tallest char → filtered ✓
+      - Noise dot: 0.02-0.05 × tallest char → filtered ✓
 
-    A fixed pixel-area threshold fails on perspective-warped plates where right-side
-
-    characters can be 3-4× smaller than left-side ones. A fixed threshold calibrated
-
-    for the left chars eliminates valid right chars; calibrated for right chars keeps
-
-    too much noise.
-
-
-
-    Strategy: sort all components by area, take the top 12 as reference (these are
-
-    overwhelmingly the main plate characters), compute their median area, and keep
-
-    only components above keep_ratio × median.
-
-
-
-    keep_ratio=0.12:
-
-      - Right-side chars at extreme perspective: ~25-40% of median → kept ✓
-
-      - ECUADOR residue (~8-12% of median): filtered ✓
-
-      - Noise dots (~1-3% of median): filtered ✓
-
-      - Handles 4-5× size variation without manual tuning.
-
+    height_ratio=0.25 sits safely between ECUADOR chars (~0.18) and the smallest
+    valid perspective-warped chars (~0.30), giving 0.07 margin on each side.
     """
-
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         binary, connectivity=8
     )
-
     if num_labels < 2:
         return binary
 
-    areas = [(i, int(stats[i, cv2.CC_STAT_AREA])) for i in range(1, num_labels)]
-
-    areas.sort(key=lambda x: x[1], reverse=True)
-
-    # Calibrate on top-12: large enough to include all main chars, small enough
-
-    # to exclude runaway noise that might dominate if band isolation is imperfect.
-
-    ref = [a for _, a in areas[:12]]
-
-    median_area = float(np.median(ref))
-
-    min_area = median_area * keep_ratio
+    # Sort by area descending; the largest-area component is used as height reference.
+    # It is always a main plate character because main chars are both taller AND wider
+    # than ECUADOR chars, so they have significantly larger area.
+    areas = sorted(
+        [(i, int(stats[i, cv2.CC_STAT_AREA])) for i in range(1, num_labels)],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    ref_idx = areas[0][0]
+    ref_h = int(stats[ref_idx, cv2.CC_STAT_HEIGHT])
+    min_h = max(4, int(ref_h * height_ratio))
 
     out = np.zeros_like(binary)
-
-    for i, area in areas:
-        if area >= min_area:
+    for i, _ in areas:
+        if int(stats[i, cv2.CC_STAT_HEIGHT]) >= min_h:
             out[labels == i] = 255
-
     return out
 
 
 def isolate_text_band(binary: np.ndarray, pad_ratio: float = 0.08) -> np.ndarray:
     """
+    Finds the main character band and returns a copy of binary with rows
+    outside that band zeroed out.
 
-    Finds the tallest contiguous horizontal band of foreground activity and
+    Design:
+      kernel=7, threshold=0.15: same as the reference state (9e99ef9).
+        - kernel=7 bridges up to 3-row gaps in row projection, which is necessary
+          to avoid splitting a single character row into multiple micro-bands due
+          to intra-character sparse rows (hollows inside 'A', 'R', '8', etc.).
+        - threshold=0.15 is permissive enough to include borderline character rows
+          without including empty inter-band gaps.
 
-    returns a copy of binary with rows outside that band zeroed out.
-
-
-
-    Eliminates ECUADOR text, plate border rows, screws, and floor/background
-
-    that survive binarization — all of which are outside the main char band.
-
-
-
-    Strategy: horizontal projection (row sums) → smooth → threshold at 15% of
-
-    max → find contiguous bands → keep the TALLEST one (main characters always
-
-    form the tallest band because they are the largest glyphs on the plate).
-
+      Band selection: DENSEST band, not tallest.
+        - 9e99ef9 selected the "tallest" band. This fails when the ECUADOR band
+          and the main-char band merge into one tall band (kernel=7 bridges the gap).
+        - Selecting by total foreground pixels (density) is more robust:
+          7 main chars × ~600px² ≈ 4200 foreground pixels
+          7 ECUADOR chars × ~150px² ≈ 1050 foreground pixels
+          The main-char band always has ≥3× more ink, regardless of band height.
+        - When both bands merge into one: the single merged band is selected anyway,
+          which is the correct fallback (remove_small_blobs handles ECUADOR removal).
+        - When bands are separate: the denser (main-char) band is selected correctly.
     """
-
     row_proj = np.sum(binary > 0, axis=1).astype(np.float32)
-
-    # Smooth over 7 rows to bridge intra-character gaps
-
     row_proj = np.convolve(row_proj, np.ones(7) / 7, mode="same")
 
     if row_proj.max() == 0:
         return binary
 
     threshold = row_proj.max() * 0.15
-
     active = row_proj >= threshold
 
-    # Collect contiguous bands
-
     bands: list[tuple[int, int]] = []
-
     in_band = False
-
     start = 0
-
     for i, is_active in enumerate(active):
         if is_active and not in_band:
             start = i
-
             in_band = True
-
         elif not is_active and in_band:
             bands.append((start, i - 1))
-
             in_band = False
-
     if in_band:
         bands.append((start, len(active) - 1))
 
     if not bands:
         return binary
 
-    # The main character band is always the tallest
-
-    y1, y2 = max(bands, key=lambda b: b[1] - b[0])
-
-    # Small vertical padding so we don't clip ascenders/descenders
+    # Select the band with most foreground pixels (main chars >> ECUADOR in ink density).
+    y1, y2 = max(bands, key=lambda b: int(np.sum(binary[b[0] : b[1] + 1] > 0)))
 
     pad = max(2, int(binary.shape[0] * pad_ratio))
-
     y1 = max(0, y1 - pad)
-
     y2 = min(binary.shape[0] - 1, y2 + pad)
 
     masked = binary.copy()
-
     masked[:y1, :] = 0
-
     masked[y2 + 1 :, :] = 0
-
     return masked

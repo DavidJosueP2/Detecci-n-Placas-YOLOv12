@@ -209,21 +209,22 @@ def filter_noise_bboxes(bboxes: list[dict]) -> list[dict]:
     """
     Removes geometrically implausible bboxes before any merge is attempted.
 
-    Targets ECUADOR residue, border fragments, and screw components that
-    inflate the count beyond expected — causing merge_nearby to kick in
-    with increasingly wide thresholds that then fuse valid characters.
+    Targets ECUADOR residue, border fragments, and isolated blobs that inflate
+    the count and cause merge_nearby to fuse valid characters.
 
-    Two criteria (both must hold to KEEP a bbox):
+    Three criteria (all must hold to KEEP a bbox):
       1. Height >= 30% of median height.
-         Handles small residue from ECUADOR text or border slivers.
-         30% is safe even under 4× perspective scaling: if the largest
-         char is 80px and the smallest is 30px, median ≈ 55px → min = 16px.
-         ECUADOR chars are typically < 15px tall after band isolation.
+         ECUADOR chars are typically 15-25% of main-char height after band
+         isolation. 30% threshold eliminates them while tolerating 3× size
+         variation across a perspective-warped plate.
 
-      2. Vertical center within 1.5 × median_height from the band's
-         median center Y.
-         Handles components that survived band isolation but are vertically
-         displaced (top-border fragment, bottom noise).
+      2. Vertical center within 1.5 × median_h from the band's median Y.
+         Catches top-border fragments and bottom noise that survived isolation.
+
+      3. Horizontal center within the expected cluster span.
+         Plate chars span roughly image_width * 0.70 horizontally. A bbox whose
+         center is farther than 0.65 × total_span from the median center-x is
+         an outlier (stray blob outside the plate text area).
     """
     if len(bboxes) <= 2:
         return bboxes
@@ -232,16 +233,30 @@ def filter_noise_bboxes(bboxes: list[dict]) -> list[dict]:
     centers_y = [b["y"] + b["h"] / 2.0 for b in bboxes]
     median_cy = float(np.median(centers_y))
 
+    centers_x = [b["x"] + b["w"] / 2.0 for b in bboxes]
+    median_cx = float(np.median(centers_x))
+    # Total horizontal span of all detections; outlier = center > 65% of span
+    # from the median center (handles plates where chars start far from edge).
+    all_x1 = min(b["x"] for b in bboxes)
+    all_x2 = max(b["x"] + b["w"] for b in bboxes)
+    total_span = max(all_x2 - all_x1, 1)
+    max_x_dist = total_span * 0.65
+
     result = []
     for b in bboxes:
+        # Criterion 1: height
         if b["h"] < med_h * 0.30:
             continue
+        # Criterion 2: vertical center
         cy = b["y"] + b["h"] / 2.0
         if abs(cy - median_cy) > med_h * 1.5:
             continue
+        # Criterion 3: horizontal center
+        cx = b["x"] + b["w"] / 2.0
+        if abs(cx - median_cx) > max_x_dist:
+            continue
         result.append(b)
 
-    # Safety: never return empty — if filter removes everything, keep original
     return result if result else bboxes
 
 
@@ -292,17 +307,21 @@ def validate_and_fix(
         if n == expected:
             return bboxes, 1.0, "exact_after_filter"
 
-        # Step 2: merge only with TIGHT thresholds (max 0.35 × median_w).
-        # The old loop went up to 1.20 × median_w which is wider than the
-        # inter-character gap and fused valid adjacent characters.
-        for factor in (0.20, 0.35):
+        # Step 2: progressive merge with capped thresholds.
+        # 0.20/0.35: handles fragmented strokes (e.g. broken '1', 'I', 'J').
+        # 0.55: handles chars where the intra-character gap (e.g. center of 'A')
+        #       creates two sibling components only slightly separated.
+        # Capped at 0.55: 0.80/1.20 were destructive (wider than inter-char gaps).
+        _prev = bboxes
+        for factor in (0.20, 0.35, 0.55):
             gap = _median_w(bboxes) * factor
             merged = merge_nearby(bboxes, gap)
             if len(merged) == expected:
                 return merged, 1.0, f"merged_{factor}"
             if len(merged) < expected:
-                # Merged too far — use previous (less merged) result
-                break
+                # Merged past the target — the previous step was closer
+                return _prev, confidence_score(len(_prev), expected), f"merged_prev_{factor}"
+            _prev = merged
 
         # Step 3: if still over expected, keep the N boxes closest to the
         # band center (drop outliers, not adjacent characters).

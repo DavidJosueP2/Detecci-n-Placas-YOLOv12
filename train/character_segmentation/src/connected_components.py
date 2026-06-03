@@ -50,22 +50,31 @@ def segment(binary: np.ndarray) -> list[dict]:
     if not candidates:
         return []
 
-    # ── Calibrate from the largest (most likely = main characters) ────────────
-    # Sort by area; the main plate characters dominate over ECUADOR text / noise
+    # ── Calibrate from the largest component ─────────────────────────────────
+    # Sort by area; the largest-area component is used as height reference.
+    # Main plate chars are both taller AND wider than ECUADOR chars → they always
+    # have larger area → candidates[0] is always a main char.
+    #
+    # WHY not median of top-15 (previous approach):
+    #   If band isolation fails and ECUADOR chars are in the binary, they can
+    #   occupy 8+ of the top-15 slots. Median([ECUADOR×8, main×7]) ≈ ECUADOR height.
+    #   Pass 2 then filters with [0.25×ECUADOR_h, 2.0×ECUADOR_h] = [4px, 30px],
+    #   which excludes main chars at 55px (above upper bound 30px) — wrong.
+    #
+    # Using the single largest component's height as reference:
+    #   ref_h = height of the largest-area candidate (always a main char)
+    #   Lower bound = 0.25 × ref_h → ECUADOR chars (18% of ref_h) are filtered
+    #   Upper bound = 2.5 × ref_h → tolerates 2.5× size variation from perspective
     candidates.sort(key=lambda c: c["_area"], reverse=True)
-    # Use top-15 by area to compute the reference height
-    top = candidates[:15]
-    med_h = float(np.median([c["h"] for c in top]))
+    ref_h = float(candidates[0]["h"])
 
     # ── Pass 2: adaptive height filter ───────────────────────────────────────
-    # [0.25 × med_h, 2.0 × med_h] tolerates 4× size variation (e.g. T vs 7
-    # on a plate with 30-40° lateral perspective tilt).
     bboxes = []
     for c in candidates:
-        h_ratio = c["h"] / med_h
+        h_ratio = c["h"] / ref_h
         aspect = c["w"] / max(c["h"], 1)
 
-        if not (0.25 <= h_ratio <= 2.0):
+        if not (0.25 <= h_ratio <= 2.5):
             continue
         if not (0.08 <= aspect <= 3.0):
             continue
