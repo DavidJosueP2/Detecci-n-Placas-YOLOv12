@@ -1,0 +1,33 @@
+data:
+  root: data/processed
+  img_size: 32
+  train_split: 0.70
+  val_split: 0.15
+  # test = remaining 0.15
+
+training:
+  epochs: 100
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 1.0e-4
+  early_stopping_patience: 15
+  min_delta: 0.001
+  num_workers: 2
+
+model:
+  num_classes: 36
+  dropout1: 0.5
+  dropout2: 0.3
+
+augmentation:
+  rotation_degrees: 5
+  translate: [0.10, 0.10]
+  brightness: 0.30
+  contrast: 0.30
+  noise_std: 0.05
+
+paths:
+  model_dir: outputs/models
+  logs_dir: outputs/logs
+  plots_dir: outputs/plots
+  best_model: outputs/models/best_model.pth
