@@ -156,6 +156,13 @@ class Config:
     DATA_DIR = BASE_DIR / "data"
     INCIDENT_DB_PATH = DATA_DIR / os.getenv("INCIDENT_DB_NAME", "incidencias.sqlite3")
     INCIDENT_COOLDOWN_SECONDS = float(os.getenv("INCIDENT_COOLDOWN_SECONDS", "45"))
+    EMAIL_INCIDENTS_ENABLED = os.getenv("EMAIL_INCIDENTS_ENABLED", "0") == "1"
+    INCIDENT_EMAIL_TO = os.getenv("INCIDENT_EMAIL_TO", "")
+    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.office365.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
     ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".mpeg", ".mpg"}
 
     HOST = os.getenv("FLASK_HOST", "127.0.0.1")

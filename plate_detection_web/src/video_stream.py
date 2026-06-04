@@ -758,6 +758,7 @@ class VideoStream:
         self._collect_ocr_results()
         enriched = []
         ocr_candidates = self._ocr_candidate_ids(detections)
+        snapshot_frame = None
 
         for detection in detections:
             self.speed_estimator.update(
@@ -767,7 +768,10 @@ class VideoStream:
             )
             snapshot_crop = self._crop_detection(frame, detection)
             if snapshot_crop is not None:
+                if snapshot_frame is None:
+                    snapshot_frame = frame.copy()
                 detection["_snapshot_crop"] = snapshot_crop
+                detection["_snapshot_frame"] = snapshot_frame
                 detection["_snapshot_timestamp"] = timestamp
 
             plate_text = ""
@@ -965,7 +969,8 @@ class VideoStream:
                 continue
 
             detection = item["detection"]
-            fuzzy_result = self._evaluate_incident(detection, frame_bytes, crop_bytes)
+            incident_frame_bytes = self._incident_frame_bytes(detection, frame_bytes)
+            fuzzy_result = self._evaluate_incident(detection, incident_frame_bytes, crop_bytes)
             if fuzzy_result is not None:
                 detection["fuzzy_result"] = fuzzy_result
 
@@ -976,6 +981,24 @@ class VideoStream:
                 }
             )
         return prepared
+
+    def _incident_frame_bytes(self, detection, fallback_frame_bytes):
+        snapshot_frame = detection.get("_snapshot_frame")
+        if snapshot_frame is None:
+            return fallback_frame_bytes
+
+        try:
+            speed_lines = self.speed_estimator.lines_for_frame(snapshot_frame.shape)
+            evidence_frame, _, _ = process_frame(
+                snapshot_frame,
+                [detection],
+                speed_lines=speed_lines,
+                stats=None,
+            )
+            evidence_frame = resize_to_max_width(evidence_frame, self.stream_max_width)
+            return encode_jpeg(evidence_frame) or fallback_frame_bytes
+        except Exception:
+            return fallback_frame_bytes
 
     def _evaluate_incident(self, detection, frame_bytes, crop_bytes):
         if self.incident_service is None or frame_bytes is None:

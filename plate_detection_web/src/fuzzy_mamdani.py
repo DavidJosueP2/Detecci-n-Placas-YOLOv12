@@ -4,31 +4,105 @@ import cv2
 import numpy as np
 
 
-INPUT_SETS = {
-    "Muy segura": ("trap", [0, 0, 15, 20]),
-    "Segura": ("tri", [15, 22, 30]),
-    "Riesgo leve": ("tri", [25, 30, 35]),
-    "Riesgo moderado": ("tri", [32, 40, 50]),
+DEFAULT_MAMDANI_MIN_SPEED = 20.0
+DEFAULT_MAMDANI_MAX_SPEED = 60.0
+DEFAULT_INPUT_SETS = {
+    "Riesgo leve": ("trap", [20, 20, 26, 32]),
+    "Riesgo moderado": ("tri", [30, 40, 50]),
     "Riesgo grave": ("trap", [45, 55, 60, 60]),
 }
-
-OUTPUT_SETS = {
-    "Normal": ("trap", [0, 0, 0.2, 0.8]),
-    "Advertencia": ("tri", [0, 1, 2]),
-    "Leve": ("tri", [2, 4, 6]),
+DEFAULT_OUTPUT_SETS = {
+    "Leve": ("tri", [0, 3, 6]),
     "Moderada": ("tri", [6, 9, 12]),
     "Grave": ("tri", [12, 18, 24]),
     "Muy grave": ("trap", [24, 36, 48, 48]),
 }
-
 RULES = [
-    {"id": "R1", "if": "Muy segura", "then": "Normal"},
-    {"id": "R2", "if": "Segura", "then": "Normal"},
-    {"id": "R3", "if": "Riesgo leve", "then": "Advertencia"},
-    {"id": "R4", "if": "Riesgo moderado", "then": "Moderada"},
-    {"id": "R5", "if": "Riesgo grave", "then": "Grave"},
-    {"id": "R6", "if": "Riesgo grave", "then": "Muy grave"},
+    {"id": "R1", "if": "Riesgo leve", "then": "Leve"},
+    {"id": "R2", "if": "Riesgo moderado", "then": "Moderada"},
+    {"id": "R3", "if": "Riesgo grave", "then": "Grave"},
+    {"id": "R4", "if": "Riesgo grave", "then": "Muy grave"},
 ]
+
+
+def _clone_sets(sets):
+    return {
+        name: (kind, [float(item) for item in params])
+        for name, (kind, params) in sets.items()
+    }
+
+
+MAMDANI_MIN_SPEED = DEFAULT_MAMDANI_MIN_SPEED
+MAMDANI_MAX_SPEED = DEFAULT_MAMDANI_MAX_SPEED
+INPUT_SETS = _clone_sets(DEFAULT_INPUT_SETS)
+OUTPUT_SETS = _clone_sets(DEFAULT_OUTPUT_SETS)
+
+
+def _coerce_params(kind, values):
+    expected = 3 if kind == "tri" else 4
+    try:
+        params = [float(item) for item in values]
+    except (TypeError, ValueError):
+        raise ValueError("Los rangos Mamdani deben ser numericos.")
+
+    if len(params) != expected:
+        raise ValueError(f"Una funcion {kind} requiere {expected} puntos.")
+
+    if any(params[index] > params[index + 1] for index in range(len(params) - 1)):
+        raise ValueError("Los puntos de cada funcion deben ir de menor a mayor.")
+
+    return params
+
+
+def _serialize_sets(sets):
+    return {
+        name: {
+            "kind": kind,
+            "params": [float(item) for item in params],
+        }
+        for name, (kind, params) in sets.items()
+    }
+
+
+def get_mamdani_config():
+    return {
+        "min_speed": float(MAMDANI_MIN_SPEED),
+        "max_speed": float(MAMDANI_MAX_SPEED),
+        "input_sets": _serialize_sets(INPUT_SETS),
+        "output_sets": _serialize_sets(OUTPUT_SETS),
+    }
+
+
+def _merge_sets(payload_sets, current_sets):
+    if not isinstance(payload_sets, dict):
+        return current_sets
+
+    merged = {}
+    for name, (kind, params) in current_sets.items():
+        raw = payload_sets.get(name, {})
+        raw_params = raw.get("params", params) if isinstance(raw, dict) else params
+        merged[name] = (kind, _coerce_params(kind, raw_params))
+    return merged
+
+
+def set_mamdani_config(config):
+    global MAMDANI_MIN_SPEED, MAMDANI_MAX_SPEED, INPUT_SETS, OUTPUT_SETS
+
+    min_speed = float(config.get("min_speed", MAMDANI_MIN_SPEED))
+    max_speed = float(config.get("max_speed", MAMDANI_MAX_SPEED))
+    if min_speed < 0 or max_speed <= min_speed:
+        raise ValueError("El rango de velocidad Mamdani debe tener un inicio menor que el final.")
+
+    current_input_sets = INPUT_SETS or DEFAULT_INPUT_SETS
+    current_output_sets = OUTPUT_SETS or DEFAULT_OUTPUT_SETS
+    input_sets = _merge_sets(config.get("input_sets"), current_input_sets)
+    output_sets = _merge_sets(config.get("output_sets"), current_output_sets)
+
+    MAMDANI_MIN_SPEED = min_speed
+    MAMDANI_MAX_SPEED = max_speed
+    INPUT_SETS = input_sets
+    OUTPUT_SETS = output_sets
+    return get_mamdani_config()
 
 
 def triangular(x, a, b, c):
@@ -44,15 +118,19 @@ def triangular(x, a, b, c):
 def trapezoidal(x, a, b, c, d):
     x = np.asarray(x, dtype=float)
     y = np.zeros_like(x)
+
     if b == a:
-        y = np.where(x <= b, 1.0, y)
+        y = np.where((x >= a) & (x <= c), 1.0, y)
     else:
-        y = np.maximum(y, np.minimum((x - a) / (b - a), 1.0))
-    y = np.where((x >= b) & (x <= c), 1.0, y)
+        rising = (x > a) & (x < b)
+        y = np.where(rising, (x - a) / (b - a), y)
+        y = np.where((x >= b) & (x <= c), 1.0, y)
+
     if d == c:
         y = np.where(x >= c, np.maximum(y, 1.0), y)
     else:
-        y = np.minimum(y, np.maximum((d - x) / (d - c), 0.0))
+        falling = (x > c) & (x < d)
+        y = np.where(falling, (d - x) / (d - c), y)
     return np.clip(y, 0.0, 1.0)
 
 
@@ -62,10 +140,55 @@ def membership(kind, params, x):
     return trapezoidal(x, *params)
 
 
+def output_universe_max():
+    values = [
+        max(params)
+        for _, params in OUTPUT_SETS.values()
+        if params
+    ]
+    return max(1.0, max(values, default=48.0))
+
+
 def evaluate_speed(velocidad_kmh, input_resolution=601, output_resolution=961):
-    speed = float(max(0.0, min(60.0, velocidad_kmh)))
-    x_input = np.linspace(0, 60, input_resolution)
-    x_output = np.linspace(0, 48, output_resolution)
+    speed = float(max(0.0, min(MAMDANI_MAX_SPEED, velocidad_kmh)))
+    x_input = np.linspace(MAMDANI_MIN_SPEED, MAMDANI_MAX_SPEED, input_resolution)
+    x_output = np.linspace(0, output_universe_max(), output_resolution)
+
+    if speed < MAMDANI_MIN_SPEED:
+        input_memberships = {name: 0.0 for name in INPUT_SETS}
+        output_curves = {
+            name: membership(kind, params, x_output)
+            for name, (kind, params) in OUTPUT_SETS.items()
+        }
+        return {
+            "velocidad_kmh": round(speed, 2),
+            "input_universe": x_input.tolist(),
+            "output_universe": x_output.tolist(),
+            "input_sets": {
+                name: membership(kind, params, x_input).tolist()
+                for name, (kind, params) in INPUT_SETS.items()
+            },
+            "output_sets": {name: curve.tolist() for name, curve in output_curves.items()},
+            "input_memberships": {
+                name: round(value, 4) for name, value in input_memberships.items()
+            },
+            "rules": [
+                {
+                    "id": rule["id"],
+                    "antecedent": rule["if"],
+                    "consequent": rule["then"],
+                    "activation": 0.0,
+                    "active": False,
+                }
+                for rule in RULES
+            ],
+            "aggregated_output": np.zeros_like(x_output).tolist(),
+            "centroid": 0.0,
+            "penalizacion_horas": 0.0,
+            "label": "Normal",
+            "is_safe": True,
+            "bypass_mamdani": True,
+        }
 
     input_memberships = {
         name: float(membership(kind, params, np.array([speed]))[0])
@@ -96,8 +219,8 @@ def evaluate_speed(velocidad_kmh, input_resolution=601, output_resolution=961):
     total_area = float(np.sum(aggregated))
     centroid = float(np.sum(x_output * aggregated) / total_area) if total_area > 0 else 0.0
     label = label_for_penalty(centroid)
-    is_safe = label == "Normal" or centroid < 0.8
-    penalty_hours = 0.0 if is_safe else centroid
+    is_safe = False
+    penalty_hours = centroid
 
     return {
         "velocidad_kmh": round(speed, 2),
@@ -117,6 +240,7 @@ def evaluate_speed(velocidad_kmh, input_resolution=601, output_resolution=961):
         "penalizacion_horas": round(penalty_hours, 2),
         "label": label,
         "is_safe": is_safe,
+        "bypass_mamdani": False,
     }
 
 
@@ -145,12 +269,25 @@ def save_fuzzy_artifacts(result, output_dir):
 
 
 def _plot_input(result, path):
-    canvas = PlotCanvas("Entrada: velocidad km/h", "km/h", "pertenencia", 0, 60, 0, 1)
     x = np.array(result["input_universe"], dtype=float)
+    x_min = float(x[0]) if len(x) else MAMDANI_MIN_SPEED
+    x_max = float(x[-1]) if len(x) else MAMDANI_MAX_SPEED
+    canvas = PlotCanvas(
+        "Entrada: velocidad km/h",
+        "km/h",
+        "pertenencia",
+        x_min,
+        x_max,
+        0,
+        1,
+    )
     for name, values in result["input_sets"].items():
         canvas.line(x, np.array(values, dtype=float), label=name)
     speed = result["velocidad_kmh"]
-    canvas.vertical(speed, (24, 92, 255), f"{speed:.1f} km/h")
+    if x_min <= speed <= x_max:
+        canvas.vertical(speed, (24, 92, 255), f"{speed:.1f} km/h")
+    else:
+        canvas.text("Menor a 20 km/h: no aplica Mamdani")
     for name, degree in result["input_memberships"].items():
         if degree > 0:
             canvas.text(f"{name}: {degree:.2f}")
@@ -158,8 +295,9 @@ def _plot_input(result, path):
 
 
 def _plot_output(result, path):
-    canvas = PlotCanvas("Salida: penalizacion administrativa", "horas", "pertenencia", 0, 48, 0, 1)
     x = np.array(result["output_universe"], dtype=float)
+    x_max = float(x[-1]) if len(x) else output_universe_max()
+    canvas = PlotCanvas("Salida: penalizacion administrativa", "horas", "pertenencia", 0, x_max, 0, 1)
     for name, values in result["output_sets"].items():
         canvas.line(x, np.array(values, dtype=float), label=name)
     canvas.vertical(result["centroid"], (24, 92, 255), f"{result['centroid']:.2f} h")
@@ -167,8 +305,9 @@ def _plot_output(result, path):
 
 
 def _plot_aggregation(result, path):
-    canvas = PlotCanvas("Agregacion Mamdani y centroide", "horas", "pertenencia", 0, 48, 0, 1)
     x = np.array(result["output_universe"], dtype=float)
+    x_max = float(x[-1]) if len(x) else output_universe_max()
+    canvas = PlotCanvas("Agregacion Mamdani y centroide", "horas", "pertenencia", 0, x_max, 0, 1)
     y = np.array(result["aggregated_output"], dtype=float)
     canvas.fill(x, y, (8, 79, 153))
     canvas.line(x, y, color=(8, 79, 153), label="Salida agregada")
