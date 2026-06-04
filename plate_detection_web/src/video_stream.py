@@ -1,5 +1,6 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from threading import Event, Lock, Thread
 
 import cv2
@@ -154,6 +155,7 @@ class VideoStream:
             min_partial_progress=speed_min_partial_progress,
         )
         self.plate_memory = {}
+        self.activity_tracks = {}
         self.last_detections = []
         self.lightweight_tracks = {}
         self.next_track_id = 1
@@ -223,6 +225,7 @@ class VideoStream:
                 source_changed = capture_version != self.source_version
 
             if source_changed:
+                self._flush_activity_tracks()
                 self._close_capture(capture, live_reader)
                 capture, capture_version, source = self._open_capture()
                 self._update_capture_info(capture, source)
@@ -246,6 +249,7 @@ class VideoStream:
             if seek_request_seconds is not None and isinstance(source, str):
                 seek_to = max(0.0, min(seek_request_seconds, self.duration_seconds or seek_request_seconds))
                 capture.set(cv2.CAP_PROP_POS_MSEC, seek_to * 1000)
+                self._flush_activity_tracks()
                 self.speed_estimator.reset()
                 self.last_ocr_attempts.clear()
                 self.last_ocr_attempt_at = 0.0
@@ -261,6 +265,7 @@ class VideoStream:
             if paused:
                 if paused_frame is not None:
                     yield self._multipart_payload(paused_frame)
+                self._flush_activity_tracks()
                 self._close_capture(capture, live_reader)
                 return
 
@@ -272,6 +277,7 @@ class VideoStream:
             if not ok:
                 if isinstance(source, str):
                     capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self._flush_activity_tracks()
                     self.speed_estimator.reset()
                     self.plate_memory.clear()
                     self.last_ocr_attempts.clear()
@@ -365,6 +371,7 @@ class VideoStream:
             self.position_seconds = 0.0
             self.duration_seconds = 0.0
             self.is_seekable = isinstance(source, str)
+            self._flush_activity_tracks()
             self.speed_estimator.reset()
             self.plate_memory.clear()
             self.last_detections = []
@@ -875,9 +882,115 @@ class VideoStream:
                 {"value": char["value"], "confidence": char["confidence"]}
                 for char in plate_chars
             ]
+            if snapshot_crop is not None:
+                activity_frame = snapshot_frame if snapshot_frame is not None else frame
+                self._update_activity_track(detection, activity_frame, snapshot_crop, timestamp)
             enriched.append(detection)
 
+        self._prune_activity_tracks()
         return enriched
+
+    def _update_activity_track(self, detection, frame, crop, timestamp):
+        track_id = detection.get("track_id")
+        if track_id is None or crop is None or crop.size == 0:
+            return
+
+        key = f"track:{track_id}"
+        now = time.monotonic()
+        activity = self.activity_tracks.get(key)
+        if activity is None:
+            activity = {
+                "track_id": track_id,
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "started_monotonic": now,
+                "last_seen_monotonic": now,
+                "last_timestamp": timestamp,
+                "source_label": self.source_label,
+                "plate_text": "",
+                "plate_original_text": "",
+                "characters": [],
+                "plate_confidence": 0.0,
+                "detection_confidence": 0.0,
+                "speed_kmh": None,
+                "best_score": -1.0,
+                "best_frame": None,
+                "best_crop": None,
+            }
+            self.activity_tracks[key] = activity
+
+        activity["last_seen_monotonic"] = now
+        activity["last_timestamp"] = timestamp
+        activity["source_label"] = self.source_label
+        if detection.get("plate_text"):
+            activity["plate_text"] = detection.get("plate_text", "")
+            activity["plate_original_text"] = detection.get("plate_original_text", "")
+            activity["plate_confidence"] = float(detection.get("plate_text_confidence", 0.0))
+            activity["characters"] = detection.get("characters", [])
+        if detection.get("speed_kmh") is not None:
+            activity["speed_kmh"] = float(detection["speed_kmh"])
+        activity["detection_confidence"] = max(
+            activity.get("detection_confidence", 0.0),
+            float(detection.get("confidence", 0.0)),
+        )
+
+        width = max(1.0, float(detection.get("x2", 0.0)) - float(detection.get("x1", 0.0)))
+        score = width + float(detection.get("confidence", 0.0)) * 80.0
+        if score > activity.get("best_score", -1.0):
+            activity["best_score"] = score
+            activity["best_frame"] = frame.copy()
+            activity["best_crop"] = crop.copy()
+
+    def _prune_activity_tracks(self, max_age_seconds=4.0):
+        now = time.monotonic()
+        expired = [
+            key
+            for key, activity in self.activity_tracks.items()
+            if now - activity.get("last_seen_monotonic", now) > max_age_seconds
+        ]
+        for key in expired:
+            self._finalize_activity_track(key)
+
+    def _flush_activity_tracks(self):
+        for key in list(self.activity_tracks):
+            self._finalize_activity_track(key)
+
+    def _finalize_activity_track(self, key):
+        activity = self.activity_tracks.pop(key, None)
+        if not activity or self.incident_service is None:
+            return
+        if not hasattr(self.incident_service, "record_activity"):
+            return
+        if activity.get("best_frame") is None or activity.get("best_crop") is None:
+            return
+
+        frame_bytes = encode_jpeg(activity["best_frame"], quality=82)
+        crop_bytes = encode_jpeg(activity["best_crop"], quality=82)
+        if frame_bytes is None or crop_bytes is None:
+            return
+
+        ended_at = datetime.now().isoformat(timespec="seconds")
+        duration = max(
+            0.0,
+            float(activity.get("last_seen_monotonic", time.monotonic()))
+            - float(activity.get("started_monotonic", time.monotonic())),
+        )
+        self.incident_service.record_activity(
+            {
+                "track_id": activity.get("track_id"),
+                "source_label": activity.get("source_label", self.source_label),
+                "started_at": activity.get("started_at", ended_at),
+                "ended_at": ended_at,
+                "duration_seconds": duration,
+                "plate_text": activity.get("plate_text", ""),
+                "plate_original_text": activity.get("plate_original_text", ""),
+                "characters": activity.get("characters", []),
+                "plate_confidence": activity.get("plate_confidence", 0.0),
+                "detection_confidence": activity.get("detection_confidence", 0.0),
+                "speed_kmh": activity.get("speed_kmh"),
+                "frame_bytes": frame_bytes,
+                "crop_bytes": crop_bytes,
+            }
+        )
 
     def _submit_ocr(self, detection, crop):
         if crop is None or self.plate_reader is None:

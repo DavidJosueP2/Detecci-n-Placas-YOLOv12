@@ -1,5 +1,6 @@
 import json
 import random
+import re
 import smtplib
 import sqlite3
 import time
@@ -28,6 +29,7 @@ class IncidentService:
         self.db_path = db_path
         self.static_dir = static_dir
         self.incident_root = static_dir / "incidencias"
+        self.activity_root = static_dir / "actividad"
         self.cooldown_seconds = max(1.0, float(cooldown_seconds))
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.cooldowns = {}
@@ -38,6 +40,7 @@ class IncidentService:
     def _init_storage(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.incident_root.mkdir(parents=True, exist_ok=True)
+        self.activity_root.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -69,16 +72,43 @@ class IncidentService:
             )
             self._ensure_column(conn, "email_sent", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "email_sent_at", "TEXT")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vehicle_activity (
+                    id TEXT PRIMARY KEY,
+                    track_id TEXT NOT NULL,
+                    source_label TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    plate_text TEXT NOT NULL,
+                    plate_original_text TEXT NOT NULL,
+                    characters_json TEXT NOT NULL DEFAULT '[]',
+                    plate_confidence REAL NOT NULL,
+                    detection_confidence REAL NOT NULL,
+                    speed_kmh REAL,
+                    vehicle_brand TEXT NOT NULL DEFAULT '',
+                    vehicle_model TEXT NOT NULL DEFAULT '',
+                    vehicle_color TEXT NOT NULL DEFAULT '',
+                    frame_path TEXT NOT NULL,
+                    crop_path TEXT NOT NULL
+                )
+                """
+            )
+            self._ensure_column(conn, "characters_json", "TEXT NOT NULL DEFAULT '[]'", table_name="vehicle_activity")
+            self._ensure_column(conn, "vehicle_brand", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
+            self._ensure_column(conn, "vehicle_model", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
+            self._ensure_column(conn, "vehicle_color", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
             conn.commit()
 
     @staticmethod
-    def _ensure_column(conn, column_name, definition):
+    def _ensure_column(conn, column_name, definition, table_name="incidents"):
         columns = {
             row["name"]
-            for row in conn.execute("PRAGMA table_info(incidents)").fetchall()
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
         if column_name not in columns:
-            conn.execute(f"ALTER TABLE incidents ADD COLUMN {column_name} {definition}")
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     def evaluate_detection(self, detection, frame_bytes, crop_bytes, source_label):
         speed = detection.get("speed_kmh")
@@ -109,6 +139,13 @@ class IncidentService:
                 "message": message,
             }
 
+        if not self._plate_valid_for_incident(detection):
+            return {
+                **public,
+                "saved": False,
+                "message": "Placa no validada",
+            }
+
         key = self._cooldown_key(detection)
         if self._is_on_cooldown(key):
             return {**public, "saved": False, "message": "Incidencia reciente"}
@@ -130,6 +167,55 @@ class IncidentService:
             "incident_id": incident_id,
             "message": "Incidencia registrada",
         }
+
+    def record_activity(self, payload):
+        self.executor.submit(self._save_activity, payload)
+
+    def _save_activity(self, payload):
+        try:
+            activity_id = payload.get("id") or str(uuid.uuid4())
+            folder = self.activity_root / activity_id
+            folder.mkdir(parents=True, exist_ok=True)
+            frame_path = folder / "frame_principal.jpg"
+            crop_path = folder / "recorte_placa.jpg"
+            frame_path.write_bytes(payload["frame_bytes"])
+            crop_path.write_bytes(payload["crop_bytes"])
+            vehicle = self._fake_vehicle(payload.get("plate_text", ""))
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO vehicle_activity (
+                        id, track_id, source_label, started_at, ended_at,
+                        duration_seconds, plate_text, plate_original_text,
+                        characters_json, plate_confidence, detection_confidence,
+                        speed_kmh, vehicle_brand, vehicle_model, vehicle_color,
+                        frame_path, crop_path
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        activity_id,
+                        str(payload.get("track_id", "")),
+                        payload.get("source_label", ""),
+                        payload.get("started_at", ""),
+                        payload.get("ended_at", ""),
+                        float(payload.get("duration_seconds") or 0.0),
+                        payload.get("plate_text", ""),
+                        payload.get("plate_original_text", ""),
+                        json.dumps(payload.get("characters", []), ensure_ascii=True),
+                        float(payload.get("plate_confidence") or 0.0),
+                        float(payload.get("detection_confidence") or 0.0),
+                        payload.get("speed_kmh"),
+                        vehicle["brand"],
+                        vehicle["model"],
+                        vehicle["color"],
+                        self._static_rel(frame_path),
+                        self._static_rel(crop_path),
+                    ),
+                )
+                conn.commit()
+        except Exception:
+            return
 
     def list_incidents(self):
         with self._connect() as conn:
@@ -165,6 +251,46 @@ class IncidentService:
             "plate": item["plate_text"],
         }
         item["email_sent"] = bool(item.get("email_sent"))
+        return item
+
+    def list_activity(self):
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, track_id, source_label, started_at, ended_at,
+                       duration_seconds, plate_text, plate_original_text,
+                       characters_json, plate_confidence, detection_confidence,
+                       speed_kmh, vehicle_brand, vehicle_model, vehicle_color,
+                       frame_path, crop_path
+                FROM vehicle_activity
+                ORDER BY ended_at DESC
+                """
+            ).fetchall()
+        return [self._activity_row(row) for row in rows]
+
+    def get_activity(self, activity_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM vehicle_activity WHERE id = ?",
+                (activity_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._activity_row(row)
+
+    @staticmethod
+    def _activity_row(row):
+        item = dict(row)
+        try:
+            item["characters"] = json.loads(item.get("characters_json") or "[]")
+        except json.JSONDecodeError:
+            item["characters"] = []
+        item["vehicle"] = {
+            "brand": item.get("vehicle_brand") or "",
+            "model": item.get("vehicle_model") or "",
+            "color": item.get("vehicle_color") or "",
+            "plate": item.get("plate_text") or "",
+        }
         return item
 
     def _save_incident(self, payload):
@@ -483,6 +609,26 @@ class IncidentService:
         if track_id is not None:
             return f"track:{track_id}"
         return f"pos:{round(detection.get('x1', 0) / 80)}:{round(detection.get('y1', 0) / 80)}"
+
+    @staticmethod
+    def _plate_valid_for_incident(detection):
+        plate = "".join(
+            char for char in str(detection.get("plate_text") or "").upper()
+            if char.isalnum()
+        )
+        if not plate:
+            return False
+
+        postprocess = detection.get("plate_postprocess") or {}
+        if postprocess.get("cumple_formato_ecuador"):
+            return True
+
+        if re.fullmatch(r"[A-Z]{3}[0-9]{3,4}", plate):
+            return True
+
+        characters = detection.get("characters") or []
+        plate_confidence = float(detection.get("plate_text_confidence") or 0.0)
+        return len(plate) >= 6 and len(characters) >= 5 and plate_confidence >= 0.45
 
     def _is_on_cooldown(self, key):
         now = time.monotonic()

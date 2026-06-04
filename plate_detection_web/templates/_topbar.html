@@ -21,6 +21,10 @@
         href="{{ url_for('incidencias') }}"
       >Incidencias</a>
       <a
+        class="border-b-2 pb-1 transition {% if active_page == 'actividad' %}border-radar-700 text-radar-700{% else %}border-transparent text-slate-600 hover:border-radar-600 hover:text-radar-700{% endif %}"
+        href="{{ url_for('actividad') }}"
+      >Actividad</a>
+      <a
         class="border-b-2 pb-1 transition {% if active_page == 'configuracion' %}border-radar-700 text-radar-700{% else %}border-transparent text-slate-600 hover:border-radar-600 hover:text-radar-700{% endif %}"
         href="{{ url_for('configuracion') }}"
       >Configuracion</a>

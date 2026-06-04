@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Actividad no encontrada</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    {% include "_tailwind_config.html" %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body class="min-h-screen bg-white font-onest text-slate-950">
+    {% include "_topbar.html" %}
+    <main class="mx-auto w-[min(900px,calc(100%-32px))] py-10">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Actividad</p>
+      <h2 class="mt-1 text-xl font-semibold">Registro no encontrado</h2>
+      <a class="mt-5 inline-flex rounded-[4px] bg-radar-700 px-4 py-2 text-sm font-semibold text-white hover:bg-radar-600" href="{{ url_for('actividad') }}">Volver a actividad</a>
+    </main>
+  </body>
+</html>

@@ -279,6 +279,27 @@ def enviar_correo_incidencia(incident_id):
     return redirect(url_for("incidencia_detalle", incident_id=incident_id, email_status=status))
 
 
+@app.route("/actividad")
+def actividad():
+    return render_template(
+        "actividad.html",
+        activity=incident_service.list_activity(),
+        active_page="actividad",
+    )
+
+
+@app.route("/actividad/<activity_id>")
+def actividad_detalle(activity_id):
+    item = incident_service.get_activity(activity_id)
+    if item is None:
+        return render_template("actividad_no_encontrada.html", active_page="actividad"), 404
+    return render_template(
+        "actividad_detalle.html",
+        item=item,
+        active_page="actividad",
+    )
+
+
 @app.route("/configuracion")
 def configuracion():
     return render_template(
