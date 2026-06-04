@@ -143,6 +143,11 @@ class Config:
     OCR_RETRY_INTERVAL_SECONDS = float(os.getenv("OCR_RETRY_INTERVAL_SECONDS", "0.30"))
     OCR_MAX_PLATES_PER_FRAME = int(os.getenv("OCR_MAX_PLATES_PER_FRAME", "1"))
     OCR_MIN_DETECTION_CONFIDENCE = float(os.getenv("OCR_MIN_DETECTION_CONFIDENCE", "0.20"))
+    OCR_ZONE_X1 = 0.0
+    OCR_ZONE_Y1 = 0.0
+    OCR_ZONE_X2 = 1.0
+    OCR_ZONE_Y2 = 1.0
+    OCR_ZONE_MIN_OVERLAP = 0.20
     # Solo controla como se dibuja el visor en la web; no cambia el video real.
     VIDEO_ASPECT_RATIO = os.getenv("VIDEO_ASPECT_RATIO", "16 / 9")
     VIDEO_MAX_WIDTH = os.getenv("VIDEO_MAX_WIDTH", "860px")

@@ -8,6 +8,7 @@ PANEL_COLOR = (255, 92, 0)
 MUTED_COLOR = (148, 163, 184)
 LINE_A_COLOR = (0, 196, 255)
 LINE_B_COLOR = (56, 217, 140)
+OCR_ZONE_COLOR = (245, 158, 11)
 DISPLAY_LABEL = "License Plate"
 
 
@@ -15,12 +16,13 @@ def clamp(value, low, high):
     return max(low, min(value, high))
 
 
-def process_frame(frame, detections, speed_lines=None, stats=None):
+def process_frame(frame, detections, speed_lines=None, ocr_zone=None, stats=None):
     output = frame.copy()
     height, width = output.shape[:2]
     best_detection = choose_best_detection(detections)
     crops = []
 
+    draw_ocr_zone(output, ocr_zone)
     draw_speed_lines(output, speed_lines or [])
 
     for detection in detections:
@@ -123,6 +125,36 @@ def draw_speed_lines(image, speed_lines):
             2,
             cv2.LINE_AA,
         )
+
+
+def draw_ocr_zone(image, zone):
+    if not zone:
+        return
+
+    height, width = image.shape[:2]
+    x1 = clamp(int(zone.get("x1", 0)), 0, width - 1)
+    y1 = clamp(int(zone.get("y1", 0)), 0, height - 1)
+    x2 = clamp(int(zone.get("x2", width - 1)), 0, width - 1)
+    y2 = clamp(int(zone.get("y2", height - 1)), 0, height - 1)
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    overlay = image.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), OCR_ZONE_COLOR, 2, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.45, image, 0.55, 0, image)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    label = zone.get("label", "Zona OCR")
+    cv2.putText(
+        image,
+        label,
+        (min(width - 118, x1 + 8), max(22, y1 + 22)),
+        font,
+        0.52,
+        OCR_ZONE_COLOR,
+        2,
+        cv2.LINE_AA,
+    )
 
 
 def draw_stats_overlay(image, stats):

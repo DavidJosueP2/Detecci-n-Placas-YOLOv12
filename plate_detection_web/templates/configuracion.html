@@ -21,12 +21,17 @@
             <div id="lineEditor" class="config-video-stage bg-slate-950">
               <img id="configFrame" class="block h-full w-full bg-slate-950 object-contain" src="{{ url_for('current_frame') }}" alt="Vista de configuracion">
               <svg id="lineOverlay" class="line-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <rect id="ocrZoneRect" class="ocr-zone-rect" x="0" y="0" width="100" height="100"></rect>
                 <line id="lineA" class="config-line-a" x1="0" y1="36" x2="100" y2="32"></line>
                 <line id="lineB" class="config-line-b" x1="0" y1="66" x2="100" y2="63"></line>
                 <circle id="handleALeft" class="line-handle line-handle-a" r="1.5" data-key="line_a_left_y"></circle>
                 <circle id="handleARight" class="line-handle line-handle-a" r="1.5" data-key="line_a_right_y"></circle>
                 <circle id="handleBLeft" class="line-handle line-handle-b" r="1.5" data-key="line_b_left_y"></circle>
                 <circle id="handleBRight" class="line-handle line-handle-b" r="1.5" data-key="line_b_right_y"></circle>
+                <circle id="ocrHandleTopLeft" class="ocr-zone-handle" r="1.6" data-corner="top_left"></circle>
+                <circle id="ocrHandleTopRight" class="ocr-zone-handle" r="1.6" data-corner="top_right"></circle>
+                <circle id="ocrHandleBottomLeft" class="ocr-zone-handle" r="1.6" data-corner="bottom_left"></circle>
+                <circle id="ocrHandleBottomRight" class="ocr-zone-handle" r="1.6" data-corner="bottom_right"></circle>
               </svg>
             </div>
           </section>
@@ -74,6 +79,34 @@
                   <span class="font-semibold text-slate-700">Linea B derecha</span>
                   <span id="lineBRightValue" class="font-semibold text-radar-700">--</span>
                 </div>
+              </div>
+
+              <div class="grid gap-3 border-t border-slate-200 pt-4 text-sm">
+                <div>
+                  <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Zona OCR</p>
+                  <p class="mt-1 text-xs text-slate-500">El OCR se ejecuta solo cuando la placa entra en este rectangulo.</p>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Izquierda</span>
+                    <span id="ocrX1Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Derecha</span>
+                    <span id="ocrX2Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Superior</span>
+                    <span id="ocrY1Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Inferior</span>
+                    <span id="ocrY2Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                </div>
+                <button id="ocrFullFrameButton" class="h-9 rounded-[4px] border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:border-radar-600 hover:text-radar-700" type="button">
+                  Usar toda la pantalla
+                </button>
               </div>
 
               <p id="saveStatus" class="min-h-[20px] text-sm font-semibold text-slate-500"></p>
@@ -155,10 +188,13 @@
       const lineOverlay = document.getElementById("lineOverlay");
       const lineA = document.getElementById("lineA");
       const lineB = document.getElementById("lineB");
+      const ocrZoneRect = document.getElementById("ocrZoneRect");
       const handleALeft = document.getElementById("handleALeft");
       const handleARight = document.getElementById("handleARight");
       const handleBLeft = document.getElementById("handleBLeft");
       const handleBRight = document.getElementById("handleBRight");
+      const ocrZoneHandles = Array.from(document.querySelectorAll(".ocr-zone-handle"));
+      const ocrFullFrameButton = document.getElementById("ocrFullFrameButton");
       const distanceInput = document.getElementById("distanceInput");
       const saveButton = document.getElementById("saveButton");
       const liveButton = document.getElementById("liveButton");
@@ -194,6 +230,12 @@
         line_b_left_y: document.getElementById("lineBLeftValue"),
         line_b_right_y: document.getElementById("lineBRightValue"),
       };
+      const ocrValues = {
+        x1: document.getElementById("ocrX1Value"),
+        x2: document.getElementById("ocrX2Value"),
+        y1: document.getElementById("ocrY1Value"),
+        y2: document.getElementById("ocrY2Value"),
+      };
       const config = {
         line_a_left_y: 0.36,
         line_a_right_y: 0.32,
@@ -203,7 +245,14 @@
         roi_x2: 1,
         distance_meters: 5,
       };
+      const ocrConfig = {
+        x1: 0,
+        y1: 0,
+        x2: 1,
+        y2: 1,
+      };
       let activeHandle = null;
+      let activeOcrHandle = null;
       let pendingTimer = null;
       let liveStarted = false;
       let mamdaniConfig = {
@@ -257,12 +306,55 @@
         distanceInput.value = Number(config.distance_meters || 5).toFixed(1);
       }
 
-      async function loadConfig() {
-        const response = await fetch("/api/speed_config", { cache: "no-store" });
-        const data = await response.json();
-        if (!data.ok) return;
-        Object.assign(config, data.config);
+      function drawOcrZone() {
+        const x1 = clamp(Number(ocrConfig.x1 || 0), 0, 1) * 100;
+        const y1 = clamp(Number(ocrConfig.y1 || 0), 0, 1) * 100;
+        const x2 = clamp(Number(ocrConfig.x2 || 1), 0, 1) * 100;
+        const y2 = clamp(Number(ocrConfig.y2 || 1), 0, 1) * 100;
+        const left = Math.min(x1, x2);
+        const right = Math.max(x1, x2);
+        const top = Math.min(y1, y2);
+        const bottom = Math.max(y1, y2);
+
+        ocrZoneRect.setAttribute("x", left);
+        ocrZoneRect.setAttribute("y", top);
+        ocrZoneRect.setAttribute("width", Math.max(2, right - left));
+        ocrZoneRect.setAttribute("height", Math.max(2, bottom - top));
+
+        const points = {
+          top_left: [left, top],
+          top_right: [right, top],
+          bottom_left: [left, bottom],
+          bottom_right: [right, bottom],
+        };
+        ocrZoneHandles.forEach((handle) => {
+          const point = points[handle.dataset.corner];
+          if (!point) return;
+          handle.setAttribute("cx", point[0]);
+          handle.setAttribute("cy", point[1]);
+        });
+
+        ocrValues.x1.textContent = percent(left / 100);
+        ocrValues.x2.textContent = percent(right / 100);
+        ocrValues.y1.textContent = percent(top / 100);
+        ocrValues.y2.textContent = percent(bottom / 100);
+      }
+
+      function drawEditor() {
         drawLines();
+        drawOcrZone();
+      }
+
+      async function loadConfig() {
+        const [speedResponse, ocrResponse] = await Promise.all([
+          fetch("/api/speed_config", { cache: "no-store" }),
+          fetch("/api/ocr_zone_config", { cache: "no-store" }),
+        ]);
+        const speedData = await speedResponse.json();
+        const ocrData = await ocrResponse.json();
+        if (speedData.ok) Object.assign(config, speedData.config);
+        if (ocrData.ok) Object.assign(ocrConfig, ocrData.config);
+        drawEditor();
       }
 
       function setMamdaniStatus(text, ok = true) {
@@ -541,33 +633,87 @@
         pendingTimer = window.setTimeout(() => saveConfig("Configuracion aplicada"), 180);
       }
 
+      function scheduleOcrSave() {
+        window.clearTimeout(pendingTimer);
+        pendingTimer = window.setTimeout(() => saveOcrConfig("Zona OCR aplicada"), 180);
+      }
+
       async function saveConfig(message = "Configuracion guardada") {
         const distance = Number(distanceInput.value);
         if (Number.isFinite(distance)) {
           config.distance_meters = distance;
         }
 
-        const response = await fetch("/api/speed_config", {
+        const speedResponse = await fetch("/api/speed_config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(config),
         });
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-          saveStatus.textContent = data.error || "No se pudo guardar";
+        const speedData = await speedResponse.json();
+        if (!speedResponse.ok || !speedData.ok) {
+          saveStatus.textContent = speedData.error || "No se pudo guardar";
           saveStatus.className = "min-h-[20px] text-sm font-semibold text-red-700";
           return;
         }
 
-        Object.assign(config, data.config);
+        Object.assign(config, speedData.config);
         drawLines();
         saveStatus.textContent = message;
         saveStatus.className = "min-h-[20px] text-sm font-semibold text-radar-700";
       }
 
+      async function saveOcrConfig(message = "Zona OCR guardada") {
+        const ocrResponse = await fetch("/api/ocr_zone_config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ocrConfig),
+        });
+        const ocrData = await ocrResponse.json();
+        if (!ocrResponse.ok || !ocrData.ok) {
+          saveStatus.textContent = ocrData.error || "No se pudo guardar zona OCR";
+          saveStatus.className = "min-h-[20px] text-sm font-semibold text-red-700";
+          return;
+        }
+
+        Object.assign(ocrConfig, ocrData.config);
+        drawOcrZone();
+        saveStatus.textContent = message;
+        saveStatus.className = "min-h-[20px] text-sm font-semibold text-radar-700";
+      }
+
+      async function saveEditorConfig(message = "Configuracion guardada") {
+        await saveConfig(message);
+        await saveOcrConfig(message);
+      }
+
       function pointerToNormalizedY(event) {
         const rect = lineOverlay.getBoundingClientRect();
         return clamp((event.clientY - rect.top) / rect.height, 0, 1);
+      }
+
+      function pointerToNormalizedPoint(event) {
+        const rect = lineOverlay.getBoundingClientRect();
+        return {
+          x: clamp((event.clientX - rect.left) / rect.width, 0, 1),
+          y: clamp((event.clientY - rect.top) / rect.height, 0, 1),
+        };
+      }
+
+      function updateOcrZoneCorner(corner, point) {
+        const minSize = 0.04;
+        if (corner === "top_left") {
+          ocrConfig.x1 = clamp(point.x, 0, ocrConfig.x2 - minSize);
+          ocrConfig.y1 = clamp(point.y, 0, ocrConfig.y2 - minSize);
+        } else if (corner === "top_right") {
+          ocrConfig.x2 = clamp(point.x, ocrConfig.x1 + minSize, 1);
+          ocrConfig.y1 = clamp(point.y, 0, ocrConfig.y2 - minSize);
+        } else if (corner === "bottom_left") {
+          ocrConfig.x1 = clamp(point.x, 0, ocrConfig.x2 - minSize);
+          ocrConfig.y2 = clamp(point.y, ocrConfig.y1 + minSize, 1);
+        } else if (corner === "bottom_right") {
+          ocrConfig.x2 = clamp(point.x, ocrConfig.x1 + minSize, 1);
+          ocrConfig.y2 = clamp(point.y, ocrConfig.y1 + minSize, 1);
+        }
       }
 
       handles.forEach((handle) => {
@@ -589,8 +735,33 @@
         });
       });
 
+      ocrZoneHandles.forEach((handle) => {
+        handle.addEventListener("pointerdown", (event) => {
+          activeOcrHandle = handle;
+          handle.setPointerCapture(event.pointerId);
+        });
+
+        handle.addEventListener("pointermove", (event) => {
+          if (activeOcrHandle !== handle) return;
+          updateOcrZoneCorner(handle.dataset.corner, pointerToNormalizedPoint(event));
+          drawOcrZone();
+          scheduleOcrSave();
+        });
+
+        handle.addEventListener("pointerup", () => {
+          activeOcrHandle = null;
+          saveOcrConfig("Zona OCR aplicada");
+        });
+      });
+
+      ocrFullFrameButton.addEventListener("click", () => {
+        Object.assign(ocrConfig, { x1: 0, y1: 0, x2: 1, y2: 1 });
+        drawOcrZone();
+        saveOcrConfig("Zona OCR en toda la pantalla");
+      });
+
       distanceInput.addEventListener("change", () => saveConfig());
-      saveButton.addEventListener("click", () => saveConfig());
+      saveButton.addEventListener("click", () => saveEditorConfig());
       document.addEventListener("input", (event) => {
         if (event.target.matches("[data-mamdani-point], #mamdaniMinSpeed, #mamdaniMaxSpeed")) {
           drawMamdaniPreviews();

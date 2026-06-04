@@ -62,6 +62,22 @@
   vector-effect: non-scaling-stroke;
 }
 
+.ocr-zone-rect {
+  fill: rgba(245, 158, 11, 0.10);
+  stroke: #f59e0b;
+  stroke-dasharray: 2.2 1.4;
+  stroke-width: 0.45;
+  vector-effect: non-scaling-stroke;
+}
+
+.ocr-zone-handle {
+  cursor: move;
+  fill: #f59e0b;
+  stroke: #ffffff;
+  stroke-width: 0.45;
+  vector-effect: non-scaling-stroke;
+}
+
 .config-line-a {
   stroke: #00c4ff;
 }

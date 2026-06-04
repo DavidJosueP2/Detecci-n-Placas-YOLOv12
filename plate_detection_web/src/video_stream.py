@@ -4,6 +4,7 @@ from datetime import datetime
 from threading import Event, Lock, Thread
 
 import cv2
+import numpy as np
 
 from src.frame_processor import (
     encode_jpeg,
@@ -95,6 +96,11 @@ class VideoStream:
         ocr_retry_interval_seconds=0.30,
         ocr_max_plates_per_frame=1,
         ocr_min_detection_confidence=0.20,
+        ocr_zone_x1=0.0,
+        ocr_zone_y1=0.0,
+        ocr_zone_x2=1.0,
+        ocr_zone_y2=1.0,
+        ocr_zone_min_overlap=0.20,
         camera_backend="msmf",
         camera_width=640,
         camera_height=480,
@@ -121,6 +127,13 @@ class VideoStream:
         self.ocr_retry_interval_seconds = max(0.0, float(ocr_retry_interval_seconds))
         self.ocr_max_plates_per_frame = max(0, int(ocr_max_plates_per_frame))
         self.ocr_min_detection_confidence = max(0.0, float(ocr_min_detection_confidence))
+        self.ocr_zone = self._normalize_ocr_zone(
+            ocr_zone_x1,
+            ocr_zone_y1,
+            ocr_zone_x2,
+            ocr_zone_y2,
+        )
+        self.ocr_zone_min_overlap = max(0.0, min(1.0, float(ocr_zone_min_overlap)))
         self.camera_backend = str(camera_backend or "auto").strip().lower()
         self.camera_width = max(0, int(camera_width))
         self.camera_height = max(0, int(camera_height))
@@ -325,6 +338,7 @@ class VideoStream:
                 frame,
                 detections,
                 speed_lines=speed_lines,
+                ocr_zone=self.ocr_zone_for_frame(frame.shape),
                 stats=self._frame_stats(detections, stats_detection),
             )
             output_frame = resize_to_max_width(processed, self.stream_max_width)
@@ -430,12 +444,30 @@ class VideoStream:
         with self.lock:
             return self.speed_estimator.get_config()
 
+    def current_ocr_zone_config(self):
+        with self.lock:
+            return dict(self.ocr_zone)
+
     def update_speed_config(self, **values):
         with self.lock:
             config = self.speed_estimator.update_config(**values)
             self.status["message"] = "Configuracion de velocidad actualizada"
             self.status["timestamp"] = now_label()
             return config
+
+    def update_ocr_zone_config(self, **values):
+        with self.lock:
+            current = dict(self.ocr_zone)
+            current.update(values)
+            self.ocr_zone = self._normalize_ocr_zone(
+                current.get("x1", 0.0),
+                current.get("y1", 0.0),
+                current.get("x2", 1.0),
+                current.get("y2", 1.0),
+            )
+            self.status["message"] = "Zona OCR actualizada"
+            self.status["timestamp"] = now_label()
+            return dict(self.ocr_zone)
 
     def toggle_pause(self):
         with self.lock:
@@ -835,9 +867,78 @@ class VideoStream:
         second_area = max(1.0, second[2] - second[0]) * max(1.0, second[3] - second[1])
         return inter / (first_area + second_area - inter)
 
+    @staticmethod
+    def _normalize_ocr_zone(x1, y1, x2, y2):
+        left = max(0.0, min(1.0, float(x1)))
+        top = max(0.0, min(1.0, float(y1)))
+        right = max(0.0, min(1.0, float(x2)))
+        bottom = max(0.0, min(1.0, float(y2)))
+
+        if right < left:
+            left, right = right, left
+        if bottom < top:
+            top, bottom = bottom, top
+
+        min_size = 0.02
+        if right - left < min_size:
+            right = min(1.0, left + min_size)
+            left = max(0.0, right - min_size)
+        if bottom - top < min_size:
+            bottom = min(1.0, top + min_size)
+            top = max(0.0, bottom - min_size)
+
+        return {"x1": left, "y1": top, "x2": right, "y2": bottom}
+
+    def ocr_zone_for_frame(self, frame_shape):
+        height, width = frame_shape[:2]
+        zone = self.ocr_zone
+        return {
+            "x1": zone["x1"] * width,
+            "y1": zone["y1"] * height,
+            "x2": zone["x2"] * width,
+            "y2": zone["y2"] * height,
+            "label": "Zona OCR",
+        }
+
+    def _is_detection_in_ocr_zone(self, detection, frame_shape):
+        zone = self.ocr_zone_for_frame(frame_shape)
+        box = self._box_tuple(detection)
+        zone_box = (zone["x1"], zone["y1"], zone["x2"], zone["y2"])
+        center_x, center_y = self._center(detection)
+
+        center_inside = (
+            zone_box[0] <= center_x <= zone_box[2]
+            and zone_box[1] <= center_y <= zone_box[3]
+        )
+        if center_inside:
+            return True
+
+        x1 = max(box[0], zone_box[0])
+        y1 = max(box[1], zone_box[1])
+        x2 = min(box[2], zone_box[2])
+        y2 = min(box[3], zone_box[3])
+        inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        box_area = max(1.0, (box[2] - box[0]) * (box[3] - box[1]))
+        return inter / box_area >= self.ocr_zone_min_overlap
+
+    @staticmethod
+    def _is_detection_near_frame_edge(detection, frame_shape):
+        height, width = frame_shape[:2]
+        margin_x = max(8.0, width * 0.012)
+        margin_y = max(6.0, height * 0.012)
+        return (
+            float(detection.get("x1", 0.0)) <= margin_x
+            or float(detection.get("y1", 0.0)) <= margin_y
+            or float(detection.get("x2", width)) >= width - margin_x
+            or float(detection.get("y2", height)) >= height - margin_y
+        )
+
     def _enrich_detections(self, frame, detections, timestamp):
         self._collect_ocr_results()
         enriched = []
+        for detection in detections:
+            detection["ocr_zone_active"] = self._is_detection_in_ocr_zone(detection, frame.shape)
+            detection["_edge_clipped"] = self._is_detection_near_frame_edge(detection, frame.shape)
         ocr_candidates = self._ocr_candidate_ids(detections)
         snapshot_frame = None
 
@@ -849,6 +950,9 @@ class VideoStream:
             )
             snapshot_crop = self._crop_detection(frame, detection)
             if snapshot_crop is not None:
+                detection["_crop_quality"] = self._plate_crop_quality(snapshot_crop)
+                detection["_crop_cut_risk"] = self._plate_crop_cut_risk(snapshot_crop)
+                detection["_crop_ghost_risk"] = self._plate_crop_ghost_risk(snapshot_crop)
                 if snapshot_frame is None:
                     snapshot_frame = frame.copy()
                 detection["_snapshot_crop"] = snapshot_crop
@@ -913,8 +1017,10 @@ class VideoStream:
                 "detection_confidence": 0.0,
                 "speed_kmh": None,
                 "best_score": -1.0,
+                "best_quality": 0.0,
                 "best_frame": None,
                 "best_crop": None,
+                "best_detection": None,
             }
             self.activity_tracks[key] = activity
 
@@ -933,12 +1039,31 @@ class VideoStream:
             float(detection.get("confidence", 0.0)),
         )
 
+        edge_clipped = bool(detection.get("_edge_clipped", False))
+        cut_risk = float(detection.get("_crop_cut_risk", 0.0))
+        ghost_risk = float(detection.get("_crop_ghost_risk", 0.0))
+        if edge_clipped or cut_risk >= 0.72:
+            return
+
         width = max(1.0, float(detection.get("x2", 0.0)) - float(detection.get("x1", 0.0)))
-        score = width + float(detection.get("confidence", 0.0)) * 80.0
+        quality = float(detection.get("_crop_quality", 0.0))
+        zone_bonus = 1000.0 if detection.get("ocr_zone_active") else 0.0
+        ocr_bonus = 1800.0 if detection.get("plate_text") else 0.0
+        ghost_penalty = max(0.0, ghost_risk - 0.48) * 2200.0
+        score = (
+            zone_bonus
+            + ocr_bonus
+            + min(width, 320.0) * 1.5
+            + quality * 7.0
+            + float(detection.get("confidence", 0.0)) * 80.0
+            - ghost_penalty
+        )
         if score > activity.get("best_score", -1.0):
             activity["best_score"] = score
+            activity["best_quality"] = quality
             activity["best_frame"] = frame.copy()
             activity["best_crop"] = crop.copy()
+            activity["best_detection"] = self._evidence_detection(detection)
 
     def _prune_activity_tracks(self, max_age_seconds=4.0):
         now = time.monotonic()
@@ -960,10 +1085,12 @@ class VideoStream:
             return
         if not hasattr(self.incident_service, "record_activity"):
             return
+        if not str(activity.get("plate_text") or "").strip():
+            return
         if activity.get("best_frame") is None or activity.get("best_crop") is None:
             return
 
-        frame_bytes = encode_jpeg(activity["best_frame"], quality=82)
+        frame_bytes = self._activity_frame_bytes(activity)
         crop_bytes = encode_jpeg(activity["best_crop"], quality=82)
         if frame_bytes is None or crop_bytes is None:
             return
@@ -991,6 +1118,28 @@ class VideoStream:
                 "crop_bytes": crop_bytes,
             }
         )
+
+    def _activity_frame_bytes(self, activity):
+        frame = activity.get("best_frame")
+        detection = activity.get("best_detection")
+        if frame is None:
+            return None
+
+        if detection is None:
+            return encode_jpeg(frame, quality=82)
+
+        try:
+            speed_lines = self.speed_estimator.lines_for_frame(frame.shape)
+            evidence_frame, _, _ = process_frame(
+                frame,
+                [detection],
+                speed_lines=speed_lines,
+                ocr_zone=self.ocr_zone_for_frame(frame.shape),
+                stats=None,
+            )
+            return encode_jpeg(evidence_frame, quality=82)
+        except Exception:
+            return encode_jpeg(frame, quality=82)
 
     def _submit_ocr(self, detection, crop):
         if crop is None or self.plate_reader is None:
@@ -1065,6 +1214,7 @@ class VideoStream:
             item
             for item in detections
             if item.get("confidence", 0.0) >= self.ocr_min_detection_confidence
+            and item.get("ocr_zone_active", False)
         ]
         candidates.sort(
             key=lambda item: (
@@ -1079,8 +1229,20 @@ class VideoStream:
         if self.plate_reader is None:
             return False
 
+        if detection.get("_edge_clipped", False):
+            return False
+
+        if float(detection.get("_crop_cut_risk", 0.0)) >= 0.72:
+            return False
+
+        if float(detection.get("_crop_ghost_risk", 0.0)) >= 0.74:
+            return False
+
         key = self._plate_memory_key(detection)
         if key in self.pending_ocr:
+            return False
+
+        if "_crop_quality" in detection and float(detection.get("_crop_quality", 0.0)) < 18.0:
             return False
 
         cached = self.plate_memory.get(key)
@@ -1171,15 +1333,160 @@ class VideoStream:
             return None
         return frame[y1:y2, x1:x2].copy()
 
+    @staticmethod
+    def _plate_crop_quality(crop):
+        if crop is None or crop.size == 0:
+            return 0.0
+
+        height, width = crop.shape[:2]
+        if height < 8 or width < 24:
+            return 0.0
+
+        scale = min(1.0, 220.0 / max(1, width))
+        sample = crop
+        if scale < 1.0:
+            sample = cv2.resize(
+                crop,
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY) if len(sample.shape) == 3 else sample
+        sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        contrast = float(gray.std())
+        brightness = float(gray.mean())
+
+        sharpness_score = min(45.0, sharpness / 4.0)
+        contrast_score = min(25.0, contrast * 0.7)
+        size_score = min(20.0, width / 7.0, height / 2.2)
+        aspect = width / max(1.0, height)
+        aspect_score = 10.0 if 1.8 <= aspect <= 6.4 else 4.0
+        brightness_penalty = 0.0 if 35.0 <= brightness <= 225.0 else 8.0
+
+        return max(
+            0.0,
+            sharpness_score + contrast_score + size_score + aspect_score - brightness_penalty,
+        )
+
+    @staticmethod
+    def _plate_crop_cut_risk(crop):
+        if crop is None or crop.size == 0:
+            return 1.0
+
+        height, width = crop.shape[:2]
+        if height < 12 or width < 36:
+            return 1.0
+
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
+        if width > 240:
+            scale = 240.0 / width
+            gray = cv2.resize(
+                gray,
+                (240, max(1, int(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+            height, width = gray.shape[:2]
+
+        edge_w = max(3, int(width * 0.08))
+        edge_h = max(3, int(height * 0.10))
+        left = gray[:, :edge_w]
+        right = gray[:, width - edge_w :]
+        top = gray[:edge_h, :]
+        bottom = gray[height - edge_h :, :]
+        center = gray[edge_h : max(edge_h + 1, height - edge_h), edge_w : max(edge_w + 1, width - edge_w)]
+
+        center_contrast = max(1.0, float(center.std()))
+        left_pressure = min(1.0, float(left.std()) / center_contrast)
+        right_pressure = min(1.0, float(right.std()) / center_contrast)
+        top_pressure = min(1.0, float(top.std()) / center_contrast)
+        bottom_pressure = min(1.0, float(bottom.std()) / center_contrast)
+
+        horizontal_asymmetry = abs(left_pressure - right_pressure)
+        vertical_asymmetry = abs(top_pressure - bottom_pressure) * 0.35
+        one_sided_pressure = max(left_pressure, right_pressure)
+        if one_sided_pressure < 0.85:
+            return min(1.0, horizontal_asymmetry + vertical_asymmetry)
+
+        return min(1.0, horizontal_asymmetry * 1.8 + vertical_asymmetry)
+
+    @staticmethod
+    def _plate_crop_ghost_risk(crop):
+        if crop is None or crop.size == 0:
+            return 0.0
+
+        height, width = crop.shape[:2]
+        if height < 16 or width < 54:
+            return 0.0
+
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
+        if width > 220:
+            scale = 220.0 / width
+            gray = cv2.resize(
+                gray,
+                (220, max(1, int(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        edges = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        edges = np.abs(edges)
+        mean = float(edges.mean())
+        if mean <= 0.1:
+            return 0.0
+
+        edges = np.minimum(edges / mean, 5.0)
+        best_corr = 0.0
+        for shift in range(3, min(18, edges.shape[1] // 3)):
+            left = edges[:, :-shift]
+            right = edges[:, shift:]
+            left_centered = left - left.mean()
+            right_centered = right - right.mean()
+            denom = float(np.linalg.norm(left_centered) * np.linalg.norm(right_centered))
+            if denom <= 1e-6:
+                continue
+            corr = float((left_centered * right_centered).sum() / denom)
+            best_corr = max(best_corr, corr)
+
+        return max(0.0, min(1.0, best_corr))
+
+    @staticmethod
+    def _evidence_detection(detection):
+        return {
+            key: value
+            for key, value in detection.items()
+            if not key.startswith("_")
+        }
+
+    def _activity_evidence_for_detection(self, detection):
+        track_id = detection.get("track_id")
+        if track_id is None:
+            return None, None, None
+
+        activity = self.activity_tracks.get(f"track:{track_id}")
+        if not activity:
+            return None, None, None
+
+        return (
+            activity.get("best_frame"),
+            activity.get("best_crop"),
+            activity.get("best_detection"),
+        )
+
     def _prepare_crop_items(self, crops, frame_bytes):
         prepared = []
         for item in crops:
-            crop_bytes = encode_jpeg(item["crop"])
+            detection = item["detection"]
+            evidence_frame, evidence_crop, evidence_detection = self._activity_evidence_for_detection(detection)
+            crop_for_evidence = evidence_crop if evidence_crop is not None else item["crop"]
+            crop_bytes = encode_jpeg(crop_for_evidence)
             if crop_bytes is None:
                 continue
 
-            detection = item["detection"]
-            incident_frame_bytes = self._incident_frame_bytes(detection, frame_bytes)
+            incident_frame_bytes = self._incident_frame_bytes(
+                evidence_detection or detection,
+                frame_bytes,
+                evidence_frame=evidence_frame,
+            )
             fuzzy_result = self._evaluate_incident(detection, incident_frame_bytes, crop_bytes)
             if fuzzy_result is not None:
                 detection["fuzzy_result"] = fuzzy_result
@@ -1187,13 +1494,13 @@ class VideoStream:
             prepared.append(
                 {
                     "detection": detection,
-                    "bytes": crop_bytes,
+                    "bytes": encode_jpeg(item["crop"]) or crop_bytes,
                 }
             )
         return prepared
 
-    def _incident_frame_bytes(self, detection, fallback_frame_bytes):
-        snapshot_frame = detection.get("_snapshot_frame")
+    def _incident_frame_bytes(self, detection, fallback_frame_bytes, evidence_frame=None):
+        snapshot_frame = evidence_frame if evidence_frame is not None else detection.get("_snapshot_frame")
         if snapshot_frame is None:
             return fallback_frame_bytes
 
@@ -1203,6 +1510,7 @@ class VideoStream:
                 snapshot_frame,
                 [detection],
                 speed_lines=speed_lines,
+                ocr_zone=self.ocr_zone_for_frame(snapshot_frame.shape),
                 stats=None,
             )
             return encode_jpeg(evidence_frame, quality=82) or fallback_frame_bytes
@@ -1240,6 +1548,7 @@ class VideoStream:
             "plate_text_confidence": detection.get("plate_text_confidence", 0.0),
             "plate_postprocess": detection.get("plate_postprocess"),
             "characters": detection.get("characters", []),
+            "ocr_zone_active": detection.get("ocr_zone_active", False),
             "speed_kmh": detection.get("speed_kmh"),
             "speed_status": detection.get("speed_status", "esperando cruce"),
             "fuzzy_result": detection.get("fuzzy_result"),

@@ -111,6 +111,9 @@ class IncidentService:
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     def evaluate_detection(self, detection, frame_bytes, crop_bytes, source_label):
+        if not str(detection.get("plate_text") or "").strip():
+            return None
+
         speed = detection.get("speed_kmh")
         if speed is None:
             return None
@@ -169,10 +172,14 @@ class IncidentService:
         }
 
     def record_activity(self, payload):
+        if not str(payload.get("plate_text") or "").strip():
+            return
         self.executor.submit(self._save_activity, payload)
 
     def _save_activity(self, payload):
         try:
+            if not str(payload.get("plate_text") or "").strip():
+                return
             activity_id = payload.get("id") or str(uuid.uuid4())
             folder = self.activity_root / activity_id
             folder.mkdir(parents=True, exist_ok=True)

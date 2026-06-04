@@ -86,6 +86,11 @@ stream = VideoStream(
     ocr_retry_interval_seconds=Config.OCR_RETRY_INTERVAL_SECONDS,
     ocr_max_plates_per_frame=Config.OCR_MAX_PLATES_PER_FRAME,
     ocr_min_detection_confidence=Config.OCR_MIN_DETECTION_CONFIDENCE,
+    ocr_zone_x1=Config.OCR_ZONE_X1,
+    ocr_zone_y1=Config.OCR_ZONE_Y1,
+    ocr_zone_x2=Config.OCR_ZONE_X2,
+    ocr_zone_y2=Config.OCR_ZONE_Y2,
+    ocr_zone_min_overlap=Config.OCR_ZONE_MIN_OVERLAP,
     camera_backend=Config.CAMERA_BACKEND,
     camera_width=Config.CAMERA_WIDTH,
     camera_height=Config.CAMERA_HEIGHT,
@@ -374,6 +379,25 @@ def speed_config():
     if env_values:
         update_env_values(env_values)
 
+    return jsonify({"ok": True, "config": updated})
+
+
+@app.route("/api/ocr_zone_config", methods=["GET", "POST"])
+def ocr_zone_config():
+    if request.method == "GET":
+        return jsonify({"ok": True, "config": stream.current_ocr_zone_config()})
+
+    payload = request.get_json(silent=True) or {}
+    accepted = {}
+    for field in {"x1", "y1", "x2", "y2"}:
+        if field not in payload:
+            continue
+        try:
+            accepted[field] = float(payload[field])
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
+
+    updated = stream.update_ocr_zone_config(**accepted)
     return jsonify({"ok": True, "config": updated})
 
 
