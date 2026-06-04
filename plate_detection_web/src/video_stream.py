@@ -1,6 +1,6 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Event, Lock, Thread
 
 import cv2
 
@@ -11,8 +11,58 @@ from src.frame_processor import (
     process_frame,
     resize_to_max_width,
 )
+from src.plate_postprocess import postprocess_ecuador_plate
 from src.speed_estimator import SpeedEstimator
 from src.utils import detection_status, now_label
+
+
+class LiveFrameReader:
+    def __init__(self, capture):
+        self.capture = capture
+        self.lock = Lock()
+        self.stop_event = Event()
+        self.frame = None
+        self.version = 0
+        self.timestamp = 0.0
+        self.last_ok_at = time.monotonic()
+        self.thread = Thread(target=self._read_loop, daemon=True)
+        self.thread.start()
+
+    def read(self, last_version=0, timeout_seconds=0.25):
+        deadline = time.monotonic() + timeout_seconds
+        while not self.stop_event.is_set():
+            with self.lock:
+                if self.frame is not None and self.version != last_version:
+                    return True, self.frame.copy(), self.timestamp, self.version
+
+            if time.monotonic() >= deadline:
+                with self.lock:
+                    if self.frame is not None:
+                        return True, self.frame.copy(), self.timestamp, self.version
+                return False, None, 0.0, last_version
+
+            time.sleep(0.003)
+
+        return False, None, 0.0, last_version
+
+    def close(self):
+        self.stop_event.set()
+        self.thread.join(timeout=0.5)
+        self.capture.release()
+
+    def _read_loop(self):
+        while not self.stop_event.is_set():
+            ok, frame = self.capture.read()
+            if not ok:
+                time.sleep(0.02)
+                continue
+
+            timestamp = time.monotonic()
+            with self.lock:
+                self.frame = frame
+                self.version += 1
+                self.timestamp = timestamp
+                self.last_ok_at = timestamp
 
 
 class VideoStream:
@@ -36,6 +86,7 @@ class VideoStream:
         speed_min_partial_progress=0.35,
         target_fps=12.0,
         stream_max_width=960,
+        stream_jpeg_quality=68,
         detection_every_n_frames=6,
         live_detection_interval_seconds=0.12,
         live_detection_mode="detect",
@@ -59,6 +110,7 @@ class VideoStream:
         self.detector_error = detector_error
         self.target_fps = max(1.0, float(target_fps))
         self.stream_max_width = max(0, int(stream_max_width))
+        self.stream_jpeg_quality = max(35, min(95, int(stream_jpeg_quality)))
         self.detection_every_n_frames = max(1, int(detection_every_n_frames))
         self.live_detection_interval_seconds = max(0.0, float(live_detection_interval_seconds))
         self.live_detection_mode = str(live_detection_mode or "detect").strip().lower()
@@ -147,6 +199,8 @@ class VideoStream:
         capture, capture_version, source = self._open_capture()
         self._update_capture_info(capture, source)
         self._restore_video_position(capture, source)
+        live_reader = self._live_reader_for_source(capture, source)
+        live_frame_version = 0
         last_emit_time = 0.0
         frame_index = 0
         if not capture.isOpened():
@@ -169,10 +223,12 @@ class VideoStream:
                 source_changed = capture_version != self.source_version
 
             if source_changed:
-                capture.release()
+                self._close_capture(capture, live_reader)
                 capture, capture_version, source = self._open_capture()
                 self._update_capture_info(capture, source)
                 self._restore_video_position(capture, source)
+                live_reader = self._live_reader_for_source(capture, source)
+                live_frame_version = 0
                 last_emit_time = 0.0
                 frame_index = 0
                 if not capture.isOpened():
@@ -205,10 +261,14 @@ class VideoStream:
             if paused:
                 if paused_frame is not None:
                     yield self._multipart_payload(paused_frame)
-                capture.release()
+                self._close_capture(capture, live_reader)
                 return
 
-            ok, frame = capture.read()
+            if live_reader is not None:
+                ok, frame, timestamp, live_frame_version = live_reader.read(live_frame_version)
+            else:
+                ok, frame = capture.read()
+                timestamp = self._frame_timestamp(capture, source) if ok else 0.0
             if not ok:
                 if isinstance(source, str):
                     capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -228,7 +288,6 @@ class VideoStream:
                 time.sleep(0.1)
                 continue
 
-            timestamp = self._frame_timestamp(capture, source)
             self._update_frame_capture_info(frame, source)
             display_position = timestamp if isinstance(source, str) else 0.0
             with self.lock:
@@ -263,7 +322,7 @@ class VideoStream:
                 stats=self._frame_stats(detections, stats_detection),
             )
             output_frame = resize_to_max_width(processed, self.stream_max_width)
-            frame_bytes = encode_jpeg(output_frame)
+            frame_bytes = encode_jpeg(output_frame, quality=self.stream_jpeg_quality)
             encoded_crop_items = self._prepare_crop_items(crops[:6], frame_bytes)
 
             with self.lock:
@@ -421,6 +480,19 @@ class VideoStream:
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return capture, version, source
 
+    @staticmethod
+    def _live_reader_for_source(capture, source):
+        if isinstance(source, str) or not capture.isOpened():
+            return None
+        return LiveFrameReader(capture)
+
+    @staticmethod
+    def _close_capture(capture, live_reader=None):
+        if live_reader is not None:
+            live_reader.close()
+            return
+        capture.release()
+
     def _open_camera_capture(self, source):
         tried = set()
         for backend in self._camera_backend_candidates():
@@ -564,6 +636,8 @@ class VideoStream:
             "capture_backend": self.capture_backend,
             "detection_mode": self._detection_mode_label(),
             "live_interval_seconds": self.live_detection_interval_seconds,
+            "stream_width": self.stream_max_width,
+            "stream_jpeg_quality": self.stream_jpeg_quality,
         }
 
     def _lightweight_track_count(self):
@@ -782,6 +856,9 @@ class VideoStream:
                 plate_text = cached["text"]
                 plate_text_confidence = cached["confidence"]
                 plate_chars = cached.get("characters", [])
+                detection["plate_original_text"] = cached.get("original_text", "")
+                detection["plate_clean_text"] = cached.get("clean_text", "")
+                detection["plate_postprocess"] = cached.get("postprocess")
 
             if id(detection) in ocr_candidates and self._should_run_ocr(detection):
                 self._submit_ocr(detection, snapshot_crop)
@@ -826,21 +903,31 @@ class VideoStream:
             except Exception:
                 continue
 
-            clean_text = "".join(char for char in text if char.isalnum()).upper()
-            if not clean_text:
+            postprocess = postprocess_ecuador_plate(text, confidence, characters)
+            corrected_text = postprocess["texto_corregido"]
+            if not corrected_text:
                 continue
 
             previous = self.plate_memory.get(key)
-            if previous and len(clean_text) < len(previous["text"]) and confidence < previous["confidence"]:
+            if previous and len(corrected_text) < len(previous["text"]) and confidence < previous["confidence"]:
                 continue
 
+            if postprocess["corregida"]:
+                print(
+                    "[OCR] placa corregida "
+                    f"{postprocess['texto_limpio']} -> {postprocess['texto_corregido']}"
+                )
+
             self.plate_memory[key] = {
-                "text": clean_text,
+                "text": corrected_text,
+                "original_text": postprocess["texto_original"],
+                "clean_text": postprocess["texto_limpio"],
                 "confidence": confidence,
                 "characters": [
                     {"value": char["value"], "confidence": char["confidence"]}
                     for char in characters
                 ],
+                "postprocess": postprocess,
                 "seen_at": time.monotonic(),
             }
 
@@ -850,8 +937,11 @@ class VideoStream:
             return detection
 
         detection["plate_text"] = cached["text"]
+        detection["plate_original_text"] = cached.get("original_text", "")
+        detection["plate_clean_text"] = cached.get("clean_text", "")
         detection["plate_text_confidence"] = cached["confidence"]
         detection["characters"] = cached.get("characters", [])
+        detection["plate_postprocess"] = cached.get("postprocess")
         return detection
 
     def _ocr_candidate_ids(self, detections):
@@ -921,7 +1011,8 @@ class VideoStream:
     def _stabilize_plate_text(self, detection, text, confidence, characters):
         key = self._plate_memory_key(detection)
         previous = self.plate_memory.get(key)
-        clean_text = "".join(char for char in text if char.isalnum()).upper()
+        postprocess = postprocess_ecuador_plate(text, confidence, characters)
+        clean_text = postprocess["texto_corregido"]
 
         if clean_text and (
             previous is None
@@ -934,10 +1025,16 @@ class VideoStream:
             ]
             self.plate_memory[key] = {
                 "text": clean_text,
+                "original_text": postprocess["texto_original"],
+                "clean_text": postprocess["texto_limpio"],
                 "confidence": confidence,
                 "characters": stored_characters,
+                "postprocess": postprocess,
                 "seen_at": time.monotonic(),
             }
+            detection["plate_original_text"] = postprocess["texto_original"]
+            detection["plate_clean_text"] = postprocess["texto_limpio"]
+            detection["plate_postprocess"] = postprocess
             return clean_text, confidence, stored_characters
 
         if previous is not None and time.monotonic() - previous["seen_at"] < 5:
@@ -995,8 +1092,7 @@ class VideoStream:
                 speed_lines=speed_lines,
                 stats=None,
             )
-            evidence_frame = resize_to_max_width(evidence_frame, self.stream_max_width)
-            return encode_jpeg(evidence_frame) or fallback_frame_bytes
+            return encode_jpeg(evidence_frame, quality=82) or fallback_frame_bytes
         except Exception:
             return fallback_frame_bytes
 
@@ -1026,7 +1122,10 @@ class VideoStream:
             "class_name": "License Plate",
             "track_id": detection.get("track_id"),
             "plate_text": detection.get("plate_text") or "",
+            "plate_original_text": detection.get("plate_original_text") or "",
+            "plate_clean_text": detection.get("plate_clean_text") or "",
             "plate_text_confidence": detection.get("plate_text_confidence", 0.0),
+            "plate_postprocess": detection.get("plate_postprocess"),
             "characters": detection.get("characters", []),
             "speed_kmh": detection.get("speed_kmh"),
             "speed_status": detection.get("speed_status", "esperando cruce"),

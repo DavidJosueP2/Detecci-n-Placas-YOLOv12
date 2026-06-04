@@ -78,6 +78,7 @@ stream = VideoStream(
     speed_min_partial_progress=Config.SPEED_MIN_PARTIAL_PROGRESS,
     target_fps=Config.STREAM_TARGET_FPS,
     stream_max_width=Config.STREAM_MAX_WIDTH,
+    stream_jpeg_quality=Config.STREAM_JPEG_QUALITY,
     detection_every_n_frames=Config.DETECTION_EVERY_N_FRAMES,
     live_detection_interval_seconds=Config.LIVE_DETECTION_INTERVAL_SECONDS,
     live_detection_mode=Config.LIVE_DETECTION_MODE,
