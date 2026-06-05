@@ -8,6 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from email.message import EmailMessage
+from html import escape
 from threading import Lock
 
 from src.fuzzy_mamdani import evaluate_speed, save_fuzzy_artifacts
@@ -91,7 +92,9 @@ class IncidentService:
                     vehicle_model TEXT NOT NULL DEFAULT '',
                     vehicle_color TEXT NOT NULL DEFAULT '',
                     frame_path TEXT NOT NULL,
-                    crop_path TEXT NOT NULL
+                    crop_path TEXT NOT NULL,
+                    email_sent INTEGER NOT NULL DEFAULT 0,
+                    email_sent_at TEXT
                 )
                 """
             )
@@ -99,6 +102,8 @@ class IncidentService:
             self._ensure_column(conn, "vehicle_brand", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
             self._ensure_column(conn, "vehicle_model", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
             self._ensure_column(conn, "vehicle_color", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
+            self._ensure_column(conn, "email_sent", "INTEGER NOT NULL DEFAULT 0", table_name="vehicle_activity")
+            self._ensure_column(conn, "email_sent_at", "TEXT", table_name="vehicle_activity")
             conn.commit()
 
     @staticmethod
@@ -188,6 +193,13 @@ class IncidentService:
             frame_path.write_bytes(payload["frame_bytes"])
             crop_path.write_bytes(payload["crop_bytes"])
             vehicle = self._fake_vehicle(payload.get("plate_text", ""))
+            record = {
+                **payload,
+                "id": activity_id,
+                "frame_path": self._static_rel(frame_path),
+                "crop_path": self._static_rel(crop_path),
+                "vehicle": vehicle,
+            }
             with self._connect() as conn:
                 conn.execute(
                     """
@@ -216,11 +228,13 @@ class IncidentService:
                         vehicle["brand"],
                         vehicle["model"],
                         vehicle["color"],
-                        self._static_rel(frame_path),
-                        self._static_rel(crop_path),
+                        record["frame_path"],
+                        record["crop_path"],
                     ),
                 )
                 conn.commit()
+            if self._send_activity_email(record, frame_path, crop_path):
+                self._mark_activity_email_sent(activity_id)
         except Exception:
             return
 
@@ -268,7 +282,7 @@ class IncidentService:
                        duration_seconds, plate_text, plate_original_text,
                        characters_json, plate_confidence, detection_confidence,
                        speed_kmh, vehicle_brand, vehicle_model, vehicle_color,
-                       frame_path, crop_path
+                       frame_path, crop_path, email_sent, email_sent_at
                 FROM vehicle_activity
                 ORDER BY ended_at DESC
                 """
@@ -298,6 +312,7 @@ class IncidentService:
             "color": item.get("vehicle_color") or "",
             "plate": item.get("plate_text") or "",
         }
+        item["email_sent"] = bool(item.get("email_sent"))
         return item
 
     def _save_incident(self, payload):
@@ -395,12 +410,43 @@ class IncidentService:
         self._mark_email_sent(incident_id)
         return {"ok": True, "already_sent": False}
 
+    def send_activity_email(self, activity_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM vehicle_activity WHERE id = ?",
+                (activity_id,),
+            ).fetchone()
+
+        if row is None:
+            return {"ok": False, "error": "Actividad no encontrada"}
+
+        record = self._activity_row(row)
+        if record.get("email_sent"):
+            return {"ok": True, "already_sent": True}
+
+        frame_path = self.static_dir / record["frame_path"]
+        crop_path = self.static_dir / record["crop_path"]
+        if not self._send_activity_email(record, frame_path, crop_path, force=True):
+            return {"ok": False, "error": "No se pudo enviar el correo"}
+
+        self._mark_activity_email_sent(activity_id)
+        return {"ok": True, "already_sent": False}
+
     def _mark_email_sent(self, incident_id):
         sent_at = datetime.now().isoformat(timespec="seconds")
         with self._connect() as conn:
             conn.execute(
                 "UPDATE incidents SET email_sent = 1, email_sent_at = ? WHERE id = ?",
                 (sent_at, incident_id),
+            )
+            conn.commit()
+
+    def _mark_activity_email_sent(self, activity_id):
+        sent_at = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE vehicle_activity SET email_sent = 1, email_sent_at = ? WHERE id = ?",
+                (sent_at, activity_id),
             )
             conn.commit()
 
@@ -433,6 +479,23 @@ class IncidentService:
         self._attach_file(message, frame_path, "frame_principal.jpg")
         self._attach_file(message, crop_path, "recorte_placa.jpg")
 
+        return self._send_email_message(message, config)
+
+    def _send_activity_email(self, record, frame_path, crop_path, force=False):
+        with self.email_lock:
+            config = dict(self.email_config)
+
+        if not self._email_config_ready(config, require_enabled=not force):
+            return
+
+        message = self._build_activity_email_message(record, config)
+        self._attach_file(message, frame_path, "frame_principal.jpg")
+        self._attach_file(message, crop_path, "recorte_placa.jpg")
+
+        return self._send_email_message(message, config)
+
+    @staticmethod
+    def _send_email_message(message, config):
         try:
             with smtplib.SMTP(config["smtp_host"], config["smtp_port"], timeout=18) as smtp:
                 smtp.ehlo()
@@ -466,6 +529,33 @@ class IncidentService:
         )
         message.set_content(text_body)
         message.add_alternative(self._email_html_body(record), subtype="html")
+        return message
+
+    def _build_activity_email_message(self, record, config):
+        speed = record.get("speed_kmh")
+        speed_text = f"{float(speed):.1f} km/h" if speed is not None else "No calculada"
+        message = EmailMessage()
+        message["Subject"] = f"Grupo K | Registro de actividad vehicular | Placa {record['plate_text']}"
+        message["From"] = config["smtp_from"]
+        message["To"] = config["recipient"]
+
+        text_body = (
+            "Regularizacion vehicular - Registro de actividad vehicular\n\n"
+            "Grupo K\n"
+            "Responsables: David Barragán y Ariel Paredes\n\n"
+            f"Placa: {record['plate_text']}\n"
+            f"Inicio: {record['started_at']}\n"
+            f"Fin: {record['ended_at']}\n"
+            f"Duracion: {float(record['duration_seconds']):.1f} s\n"
+            f"Velocidad registrada: {speed_text}\n"
+            f"Confianza OCR: {float(record['plate_confidence']) * 100:.1f}%\n"
+            f"Confianza de deteccion: {float(record['detection_confidence']) * 100:.1f}%\n"
+            f"Vehiculo: {record['vehicle']['brand']} {record['vehicle']['model']} {record['vehicle']['color']}\n"
+            f"Fuente: {record['source_label']}\n\n"
+            "Se adjuntan la imagen principal del registro y el recorte de la placa."
+        )
+        message.set_content(text_body)
+        message.add_alternative(self._activity_email_html_body(record), subtype="html")
         return message
 
     @staticmethod
@@ -524,6 +614,119 @@ class IncidentService:
                 </table>
                 <div style="margin-top:22px;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155;font-size:14px;line-height:1.55;">
                   Se adjuntan la evidencia principal de la incidencia y el recorte de la placa detectada para su revision.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:18px 28px 26px 28px;color:#475569;font-size:13px;line-height:1.55;">
+                <strong>Responsables:</strong> David Barragán y Ariel Paredes
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+    @staticmethod
+    def _activity_email_html_body(record):
+        speed = record.get("speed_kmh")
+        speed_text = f"{float(speed):.1f} km/h" if speed is not None else "No calculada"
+        duration_text = f"{float(record.get('duration_seconds') or 0.0):.1f} s"
+        ocr_confidence = float(record.get("plate_confidence") or 0.0) * 100
+        detection_confidence = float(record.get("detection_confidence") or 0.0) * 100
+        vehicle = record.get("vehicle") or {}
+        vehicle_parts = [
+            str(vehicle.get("brand") or "").strip(),
+            str(vehicle.get("model") or "").strip(),
+            str(vehicle.get("color") or "").strip(),
+        ]
+        vehicle_text = " ".join(part for part in vehicle_parts if part) or "No identificado"
+        characters = record.get("characters") or []
+        character_text = ", ".join(
+            f"{item.get('value', '')} ({float(item.get('confidence') or 0.0) * 100:.1f}%)"
+            for item in characters
+            if item.get("value")
+        ) or "Sin detalle individual"
+
+        plate = escape(str(record.get("plate_text") or "Sin lectura"))
+        source = escape(str(record.get("source_label") or ""))
+        started_at = escape(str(record.get("started_at") or ""))
+        ended_at = escape(str(record.get("ended_at") or ""))
+        vehicle_text = escape(vehicle_text)
+        character_text = escape(character_text)
+
+        return f"""\
+<!doctype html>
+<html lang="es">
+  <body style="margin:0;background:#f4f7fb;padding:0;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7fb;padding:28px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="680" cellspacing="0" cellpadding="0" style="width:680px;max-width:94%;background:#ffffff;border:1px solid #dbe3ee;">
+            <tr>
+              <td style="background:#084f99;padding:24px 28px;color:#ffffff;">
+                <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;font-weight:700;">Grupo K</div>
+                <div style="font-size:24px;font-weight:700;margin-top:6px;">Regularizacion vehicular</div>
+                <div style="font-size:14px;margin-top:8px;color:#d8ebff;">Notificacion formal de actividad vehicular registrada</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:26px 28px 12px 28px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td style="width:50%;padding:0 10px 14px 0;">
+                      <div style="font-size:12px;color:#64748b;text-transform:uppercase;font-weight:700;">Placa</div>
+                      <div style="font-size:28px;font-weight:800;margin-top:4px;">{plate}</div>
+                    </td>
+                    <td style="width:50%;padding:0 0 14px 10px;text-align:right;">
+                      <div style="font-size:12px;color:#64748b;text-transform:uppercase;font-weight:700;">Tipo de registro</div>
+                      <div style="display:inline-block;margin-top:6px;background:#e0f2fe;color:#075985;border:1px solid #bae6fd;padding:8px 12px;font-size:16px;font-weight:800;">Actividad normal</div>
+                    </td>
+                  </tr>
+                </table>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-top:8px;">
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Inicio del registro</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{started_at}</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Fin del registro</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{ended_at}</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Duracion observada</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{duration_text}</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Velocidad registrada</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{speed_text}</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Vehiculo estimado</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{vehicle_text}</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Confianza OCR</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{ocr_confidence:.1f}%</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Confianza de deteccion</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{detection_confidence:.1f}%</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Caracteres OCR</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{character_text}</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;padding:12px 0;color:#475569;">Fuente</td>
+                    <td style="border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{source}</td>
+                  </tr>
+                </table>
+                <div style="margin-top:22px;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155;font-size:14px;line-height:1.55;">
+                  Se adjuntan la evidencia principal del registro de actividad y el recorte de la placa detectada para su revision.
                 </div>
               </td>
             </tr>

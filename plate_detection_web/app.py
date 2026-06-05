@@ -302,7 +302,21 @@ def actividad_detalle(activity_id):
         "actividad_detalle.html",
         item=item,
         active_page="actividad",
+        email_status=request.args.get("email_status", ""),
     )
+
+
+@app.route("/actividad/<activity_id>/enviar_correo", methods=["POST"])
+def enviar_correo_actividad(activity_id):
+    result = incident_service.send_activity_email(activity_id)
+    if result.get("already_sent"):
+        status = "already"
+    elif result.get("ok"):
+        status = "sent"
+    else:
+        status = "error"
+
+    return redirect(url_for("actividad_detalle", activity_id=activity_id, email_status=status))
 
 
 @app.route("/configuracion")

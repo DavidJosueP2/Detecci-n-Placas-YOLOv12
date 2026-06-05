@@ -12,9 +12,33 @@
     {% include "_topbar.html" %}
 
     <main class="mx-auto grid w-[min(1360px,calc(100%-32px))] gap-6 py-6">
-      <div>
-        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Detalle de actividad</p>
-        <h2 class="mt-1 text-xl font-semibold">{{ item.plate_text or "Sin lectura" }}</h2>
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Detalle de actividad</p>
+          <h2 class="mt-1 text-xl font-semibold">{{ item.plate_text or "Sin lectura" }}</h2>
+        </div>
+
+        <div class="grid justify-items-end gap-2">
+          {% if not item.email_sent %}
+          <form method="post" action="{{ url_for('enviar_correo_actividad', activity_id=item.id) }}">
+            <button class="rounded-[4px] bg-radar-700 px-4 py-2 text-sm font-semibold text-white hover:bg-radar-600" type="submit">
+              Enviar correo
+            </button>
+          </form>
+          {% else %}
+          <span class="border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+            Correo enviado
+          </span>
+          {% endif %}
+
+          {% if email_status == "sent" %}
+          <p class="text-sm font-semibold text-emerald-700">Correo enviado correctamente.</p>
+          {% elif email_status == "already" %}
+          <p class="text-sm font-semibold text-slate-500">La actividad ya fue enviada.</p>
+          {% elif email_status == "error" %}
+          <p class="text-sm font-semibold text-red-700">No se pudo enviar. Revisa la configuracion SMTP en .env.</p>
+          {% endif %}
+        </div>
       </div>
 
       <section class="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
