@@ -1,3 +1,4 @@
 plate_detection_web/models/license_plate_keypoint.pt
 data/
 incidencias/
+static/actividad/

@@ -138,6 +138,7 @@ class Config:
     SPEED_MIN_PARTIAL_PROGRESS = float(os.getenv("SPEED_MIN_PARTIAL_PROGRESS", "0.35"))
     STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "12"))
     STREAM_MAX_WIDTH = int(os.getenv("STREAM_MAX_WIDTH", "960"))
+    STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "68"))
     DETECTION_EVERY_N_FRAMES = int(os.getenv("DETECTION_EVERY_N_FRAMES", "6"))
     LIVE_DETECTION_INTERVAL_SECONDS = float(os.getenv("LIVE_DETECTION_INTERVAL_SECONDS", "0.0"))
     LIVE_DETECTION_MODE = os.getenv("LIVE_DETECTION_MODE", "detect")
@@ -145,6 +146,11 @@ class Config:
     OCR_RETRY_INTERVAL_SECONDS = float(os.getenv("OCR_RETRY_INTERVAL_SECONDS", "0.30"))
     OCR_MAX_PLATES_PER_FRAME = int(os.getenv("OCR_MAX_PLATES_PER_FRAME", "1"))
     OCR_MIN_DETECTION_CONFIDENCE = float(os.getenv("OCR_MIN_DETECTION_CONFIDENCE", "0.20"))
+    OCR_ZONE_X1 = 0.0
+    OCR_ZONE_Y1 = 0.0
+    OCR_ZONE_X2 = 1.0
+    OCR_ZONE_Y2 = 1.0
+    OCR_ZONE_MIN_OVERLAP = 0.20
     # Solo controla como se dibuja el visor en la web; no cambia el video real.
     VIDEO_ASPECT_RATIO = os.getenv("VIDEO_ASPECT_RATIO", "16 / 9")
     VIDEO_MAX_WIDTH = os.getenv("VIDEO_MAX_WIDTH", "860px")
@@ -159,6 +165,13 @@ class Config:
     DATA_DIR = BASE_DIR / "data"
     INCIDENT_DB_PATH = DATA_DIR / os.getenv("INCIDENT_DB_NAME", "incidencias.sqlite3")
     INCIDENT_COOLDOWN_SECONDS = float(os.getenv("INCIDENT_COOLDOWN_SECONDS", "45"))
+    EMAIL_INCIDENTS_ENABLED = os.getenv("EMAIL_INCIDENTS_ENABLED", "0") == "1"
+    INCIDENT_EMAIL_TO = os.getenv("INCIDENT_EMAIL_TO", "")
+    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.office365.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
     ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".mpeg", ".mpg"}
 
     HOST = os.getenv("FLASK_HOST", "127.0.0.1")

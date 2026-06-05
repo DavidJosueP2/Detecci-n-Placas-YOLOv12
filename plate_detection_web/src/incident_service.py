@@ -1,10 +1,14 @@
 import json
 import random
+import re
+import smtplib
 import sqlite3
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from email.message import EmailMessage
+from threading import Lock
 
 from src.fuzzy_mamdani import evaluate_speed, save_fuzzy_artifacts
 
@@ -17,21 +21,26 @@ BRANDS = {
     "Nissan": ["Versa", "Sentra", "Kicks", "Frontier"],
 }
 COLORS = ["blanco", "gris", "negro", "rojo", "azul", "plata"]
+SMTP_PASSWORD_PLACEHOLDER = "TU_CONTRASEÑA_DE_APLICACION"
 
 
 class IncidentService:
-    def __init__(self, db_path, static_dir, cooldown_seconds=45):
+    def __init__(self, db_path, static_dir, cooldown_seconds=45, email_config=None):
         self.db_path = db_path
         self.static_dir = static_dir
         self.incident_root = static_dir / "incidencias"
+        self.activity_root = static_dir / "actividad"
         self.cooldown_seconds = max(1.0, float(cooldown_seconds))
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.cooldowns = {}
+        self.email_lock = Lock()
+        self.email_config = self._normalize_email_config(email_config or {})
         self._init_storage()
 
     def _init_storage(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.incident_root.mkdir(parents=True, exist_ok=True)
+        self.activity_root.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -55,13 +64,56 @@ class IncidentService:
                     fuzzy_json TEXT NOT NULL,
                     graph_input_path TEXT NOT NULL,
                     graph_output_path TEXT NOT NULL,
-                    graph_aggregation_path TEXT NOT NULL
+                    graph_aggregation_path TEXT NOT NULL,
+                    email_sent INTEGER NOT NULL DEFAULT 0,
+                    email_sent_at TEXT
                 )
                 """
             )
+            self._ensure_column(conn, "email_sent", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "email_sent_at", "TEXT")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vehicle_activity (
+                    id TEXT PRIMARY KEY,
+                    track_id TEXT NOT NULL,
+                    source_label TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    plate_text TEXT NOT NULL,
+                    plate_original_text TEXT NOT NULL,
+                    characters_json TEXT NOT NULL DEFAULT '[]',
+                    plate_confidence REAL NOT NULL,
+                    detection_confidence REAL NOT NULL,
+                    speed_kmh REAL,
+                    vehicle_brand TEXT NOT NULL DEFAULT '',
+                    vehicle_model TEXT NOT NULL DEFAULT '',
+                    vehicle_color TEXT NOT NULL DEFAULT '',
+                    frame_path TEXT NOT NULL,
+                    crop_path TEXT NOT NULL
+                )
+                """
+            )
+            self._ensure_column(conn, "characters_json", "TEXT NOT NULL DEFAULT '[]'", table_name="vehicle_activity")
+            self._ensure_column(conn, "vehicle_brand", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
+            self._ensure_column(conn, "vehicle_model", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
+            self._ensure_column(conn, "vehicle_color", "TEXT NOT NULL DEFAULT ''", table_name="vehicle_activity")
             conn.commit()
 
+    @staticmethod
+    def _ensure_column(conn, column_name, definition, table_name="incidents"):
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
     def evaluate_detection(self, detection, frame_bytes, crop_bytes, source_label):
+        if not str(detection.get("plate_text") or "").strip():
+            return None
+
         speed = detection.get("speed_kmh")
         if speed is None:
             return None
@@ -78,11 +130,23 @@ class IncidentService:
         }
 
         if fuzzy["is_safe"]:
+            message = (
+                "Felicitacion normal"
+                if fuzzy.get("bypass_mamdani")
+                else "Dentro del rango permitido"
+            )
             return {
                 **public,
                 "penalizacion_horas": 0.0,
                 "saved": False,
-                "message": "Dentro del rango permitido",
+                "message": message,
+            }
+
+        if not self._plate_valid_for_incident(detection):
+            return {
+                **public,
+                "saved": False,
+                "message": "Placa no validada",
             }
 
         key = self._cooldown_key(detection)
@@ -106,6 +170,59 @@ class IncidentService:
             "incident_id": incident_id,
             "message": "Incidencia registrada",
         }
+
+    def record_activity(self, payload):
+        if not str(payload.get("plate_text") or "").strip():
+            return
+        self.executor.submit(self._save_activity, payload)
+
+    def _save_activity(self, payload):
+        try:
+            if not str(payload.get("plate_text") or "").strip():
+                return
+            activity_id = payload.get("id") or str(uuid.uuid4())
+            folder = self.activity_root / activity_id
+            folder.mkdir(parents=True, exist_ok=True)
+            frame_path = folder / "frame_principal.jpg"
+            crop_path = folder / "recorte_placa.jpg"
+            frame_path.write_bytes(payload["frame_bytes"])
+            crop_path.write_bytes(payload["crop_bytes"])
+            vehicle = self._fake_vehicle(payload.get("plate_text", ""))
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO vehicle_activity (
+                        id, track_id, source_label, started_at, ended_at,
+                        duration_seconds, plate_text, plate_original_text,
+                        characters_json, plate_confidence, detection_confidence,
+                        speed_kmh, vehicle_brand, vehicle_model, vehicle_color,
+                        frame_path, crop_path
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        activity_id,
+                        str(payload.get("track_id", "")),
+                        payload.get("source_label", ""),
+                        payload.get("started_at", ""),
+                        payload.get("ended_at", ""),
+                        float(payload.get("duration_seconds") or 0.0),
+                        payload.get("plate_text", ""),
+                        payload.get("plate_original_text", ""),
+                        json.dumps(payload.get("characters", []), ensure_ascii=True),
+                        float(payload.get("plate_confidence") or 0.0),
+                        float(payload.get("detection_confidence") or 0.0),
+                        payload.get("speed_kmh"),
+                        vehicle["brand"],
+                        vehicle["model"],
+                        vehicle["color"],
+                        self._static_rel(frame_path),
+                        self._static_rel(crop_path),
+                    ),
+                )
+                conn.commit()
+        except Exception:
+            return
 
     def list_incidents(self):
         with self._connect() as conn:
@@ -139,6 +256,47 @@ class IncidentService:
             "model": item["vehicle_model"],
             "color": item["vehicle_color"],
             "plate": item["plate_text"],
+        }
+        item["email_sent"] = bool(item.get("email_sent"))
+        return item
+
+    def list_activity(self):
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, track_id, source_label, started_at, ended_at,
+                       duration_seconds, plate_text, plate_original_text,
+                       characters_json, plate_confidence, detection_confidence,
+                       speed_kmh, vehicle_brand, vehicle_model, vehicle_color,
+                       frame_path, crop_path
+                FROM vehicle_activity
+                ORDER BY ended_at DESC
+                """
+            ).fetchall()
+        return [self._activity_row(row) for row in rows]
+
+    def get_activity(self, activity_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM vehicle_activity WHERE id = ?",
+                (activity_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._activity_row(row)
+
+    @staticmethod
+    def _activity_row(row):
+        item = dict(row)
+        try:
+            item["characters"] = json.loads(item.get("characters_json") or "[]")
+        except json.JSONDecodeError:
+            item["characters"] = []
+        item["vehicle"] = {
+            "brand": item.get("vehicle_brand") or "",
+            "model": item.get("vehicle_model") or "",
+            "color": item.get("vehicle_color") or "",
+            "plate": item.get("plate_text") or "",
         }
         return item
 
@@ -209,9 +367,216 @@ class IncidentService:
                     ),
                 )
                 conn.commit()
+            if self._send_incident_email(record, frame_path, crop_path):
+                self._mark_email_sent(record["id"])
         except Exception:
             # El stream no debe caerse por un fallo de evidencia o persistencia.
             return
+
+    def send_incident_email(self, incident_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM incidents WHERE id = ?",
+                (incident_id,),
+            ).fetchone()
+
+        if row is None:
+            return {"ok": False, "error": "Incidencia no encontrada"}
+
+        record = dict(row)
+        if record.get("email_sent"):
+            return {"ok": True, "already_sent": True}
+
+        frame_path = self.static_dir / record["frame_path"]
+        crop_path = self.static_dir / record["crop_path"]
+        if not self._send_incident_email(record, frame_path, crop_path, force=True):
+            return {"ok": False, "error": "No se pudo enviar el correo"}
+
+        self._mark_email_sent(incident_id)
+        return {"ok": True, "already_sent": False}
+
+    def _mark_email_sent(self, incident_id):
+        sent_at = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE incidents SET email_sent = 1, email_sent_at = ? WHERE id = ?",
+                (sent_at, incident_id),
+            )
+            conn.commit()
+
+    def current_email_config(self):
+        with self.email_lock:
+            config = dict(self.email_config)
+        password = config.pop("smtp_password", "")
+        config["smtp_password_set"] = bool(password and password != SMTP_PASSWORD_PLACEHOLDER)
+        return config
+
+    def update_email_config(self, **values):
+        with self.email_lock:
+            merged = {**self.email_config, **values}
+            if not values.get("smtp_password"):
+                merged["smtp_password"] = self.email_config.get("smtp_password", "")
+            self.email_config = self._normalize_email_config(merged)
+            config = dict(self.email_config)
+        password = config.pop("smtp_password", "")
+        config["smtp_password_set"] = bool(password and password != SMTP_PASSWORD_PLACEHOLDER)
+        return config
+
+    def _send_incident_email(self, record, frame_path, crop_path, force=False):
+        with self.email_lock:
+            config = dict(self.email_config)
+
+        if not self._email_config_ready(config, require_enabled=not force):
+            return
+
+        message = self._build_email_message(record, config)
+        self._attach_file(message, frame_path, "frame_principal.jpg")
+        self._attach_file(message, crop_path, "recorte_placa.jpg")
+
+        try:
+            with smtplib.SMTP(config["smtp_host"], config["smtp_port"], timeout=18) as smtp:
+                smtp.ehlo()
+                smtp.starttls()
+                smtp.ehlo()
+                smtp.login(config["smtp_user"], config["smtp_password"])
+                smtp.send_message(message)
+            return True
+        except Exception:
+            return False
+
+    def _build_email_message(self, record, config):
+        subject_plate = record.get("plate_text") or "No reconocida"
+        message = EmailMessage()
+        message["Subject"] = f"Grupo K | Incidencia foto radar | Placa {subject_plate}"
+        message["From"] = config["smtp_from"]
+        message["To"] = config["recipient"]
+
+        text_body = (
+            "Regularizacion vehicular - Notificacion de incidencia\n\n"
+            "Grupo K\n"
+            "Responsables: David Barragán y Ariel Paredes\n\n"
+            f"Fecha/hora: {record['created_at']}\n"
+            f"Placa: {record['plate_text']}\n"
+            f"Velocidad registrada: {record['speed_kmh']:.1f} km/h\n"
+            f"Nivel de riesgo: {record['risk_label']}\n"
+            f"Penalizacion estimada: {record['penalty_hours']:.2f} h\n"
+            f"Confianza de deteccion: {record['detection_confidence'] * 100:.1f}%\n"
+            f"Fuente: {record['source_label']}\n\n"
+            "Se adjuntan la imagen principal de la incidencia y el recorte de la placa."
+        )
+        message.set_content(text_body)
+        message.add_alternative(self._email_html_body(record), subtype="html")
+        return message
+
+    @staticmethod
+    def _email_html_body(record):
+        confidence = record["detection_confidence"] * 100
+        return f"""\
+<!doctype html>
+<html lang="es">
+  <body style="margin:0;background:#f4f7fb;padding:0;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7fb;padding:28px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="680" cellspacing="0" cellpadding="0" style="width:680px;max-width:94%;background:#ffffff;border:1px solid #dbe3ee;">
+            <tr>
+              <td style="background:#084f99;padding:24px 28px;color:#ffffff;">
+                <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;font-weight:700;">Grupo K</div>
+                <div style="font-size:24px;font-weight:700;margin-top:6px;">Regularizacion vehicular</div>
+                <div style="font-size:14px;margin-top:8px;color:#d8ebff;">Notificacion formal de incidencia registrada</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:26px 28px 12px 28px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td style="width:50%;padding:0 10px 14px 0;">
+                      <div style="font-size:12px;color:#64748b;text-transform:uppercase;font-weight:700;">Placa</div>
+                      <div style="font-size:28px;font-weight:800;margin-top:4px;">{record['plate_text']}</div>
+                    </td>
+                    <td style="width:50%;padding:0 0 14px 10px;text-align:right;">
+                      <div style="font-size:12px;color:#64748b;text-transform:uppercase;font-weight:700;">Nivel de riesgo</div>
+                      <div style="display:inline-block;margin-top:6px;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;padding:8px 12px;font-size:16px;font-weight:800;">{record['risk_label']}</div>
+                    </td>
+                  </tr>
+                </table>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-top:8px;">
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Fecha/hora</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{record['created_at']}</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Velocidad registrada</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{record['speed_kmh']:.1f} km/h</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Penalizacion estimada</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{record['penalty_hours']:.2f} h</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;color:#475569;">Confianza de deteccion</td>
+                    <td style="border-top:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{confidence:.1f}%</td>
+                  </tr>
+                  <tr>
+                    <td style="border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;padding:12px 0;color:#475569;">Fuente</td>
+                    <td style="border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;padding:12px 0;text-align:right;font-weight:700;">{record['source_label']}</td>
+                  </tr>
+                </table>
+                <div style="margin-top:22px;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155;font-size:14px;line-height:1.55;">
+                  Se adjuntan la evidencia principal de la incidencia y el recorte de la placa detectada para su revision.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:18px 28px 26px 28px;color:#475569;font-size:13px;line-height:1.55;">
+                <strong>Responsables:</strong> David Barragán y Ariel Paredes
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+    @staticmethod
+    def _attach_file(message, path, filename):
+        if not path.exists():
+            return
+        message.add_attachment(
+            path.read_bytes(),
+            maintype="image",
+            subtype="jpeg",
+            filename=filename,
+        )
+
+    @staticmethod
+    def _normalize_email_config(config):
+        return {
+            "enabled": bool(config.get("enabled", False)),
+            "recipient": str(config.get("recipient", "") or "").strip(),
+            "smtp_host": str(config.get("smtp_host", "smtp.office365.com") or "").strip(),
+            "smtp_port": int(config.get("smtp_port", 587) or 587),
+            "smtp_user": str(config.get("smtp_user", "") or "").strip(),
+            "smtp_password": str(config.get("smtp_password", "") or ""),
+            "smtp_from": str(config.get("smtp_from", config.get("smtp_user", "")) or "").strip(),
+        }
+
+    @staticmethod
+    def _email_config_ready(config, require_enabled=True):
+        checks = [
+            config.get("recipient"),
+            config.get("smtp_host"),
+            config.get("smtp_port"),
+            config.get("smtp_user"),
+            config.get("smtp_password"),
+            config.get("smtp_password") != SMTP_PASSWORD_PLACEHOLDER,
+            config.get("smtp_from"),
+        ]
+        if require_enabled:
+            checks.append(config.get("enabled"))
+        return all(checks)
 
     def _build_payload(self, incident_id, detection, fuzzy, frame_bytes, crop_bytes, source_label):
         plate_text = detection.get("plate_text") or "No reconocida"
@@ -251,6 +616,26 @@ class IncidentService:
         if track_id is not None:
             return f"track:{track_id}"
         return f"pos:{round(detection.get('x1', 0) / 80)}:{round(detection.get('y1', 0) / 80)}"
+
+    @staticmethod
+    def _plate_valid_for_incident(detection):
+        plate = "".join(
+            char for char in str(detection.get("plate_text") or "").upper()
+            if char.isalnum()
+        )
+        if not plate:
+            return False
+
+        postprocess = detection.get("plate_postprocess") or {}
+        if postprocess.get("cumple_formato_ecuador"):
+            return True
+
+        if re.fullmatch(r"[A-Z]{3}[0-9]{3,4}", plate):
+            return True
+
+        characters = detection.get("characters") or []
+        plate_confidence = float(detection.get("plate_text_confidence") or 0.0)
+        return len(plate) >= 6 and len(characters) >= 5 and plate_confidence >= 0.45
 
     def _is_on_cooldown(self, key):
         now = time.monotonic()

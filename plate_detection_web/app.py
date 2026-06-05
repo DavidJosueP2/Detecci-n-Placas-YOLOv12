@@ -4,11 +4,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, render_template, request, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
 from werkzeug.utils import secure_filename
 
 from config import Config
 from src.detector import PlateDetector
+from src.fuzzy_mamdani import get_mamdani_config, set_mamdani_config
 from src.incident_service import IncidentService
 from src.plate_reader import PlateReader
 from src.video_stream import VideoStream
@@ -20,6 +21,15 @@ incident_service = IncidentService(
     db_path=Config.INCIDENT_DB_PATH,
     static_dir=Config.STATIC_DIR,
     cooldown_seconds=Config.INCIDENT_COOLDOWN_SECONDS,
+    email_config={
+        "enabled": Config.EMAIL_INCIDENTS_ENABLED,
+        "recipient": Config.INCIDENT_EMAIL_TO,
+        "smtp_host": Config.SMTP_HOST,
+        "smtp_port": Config.SMTP_PORT,
+        "smtp_user": Config.SMTP_USER,
+        "smtp_password": Config.SMTP_PASSWORD,
+        "smtp_from": Config.SMTP_FROM,
+    },
 )
 
 detector_error = None
@@ -68,6 +78,7 @@ stream = VideoStream(
     speed_min_partial_progress=Config.SPEED_MIN_PARTIAL_PROGRESS,
     target_fps=Config.STREAM_TARGET_FPS,
     stream_max_width=Config.STREAM_MAX_WIDTH,
+    stream_jpeg_quality=Config.STREAM_JPEG_QUALITY,
     detection_every_n_frames=Config.DETECTION_EVERY_N_FRAMES,
     live_detection_interval_seconds=Config.LIVE_DETECTION_INTERVAL_SECONDS,
     live_detection_mode=Config.LIVE_DETECTION_MODE,
@@ -75,6 +86,11 @@ stream = VideoStream(
     ocr_retry_interval_seconds=Config.OCR_RETRY_INTERVAL_SECONDS,
     ocr_max_plates_per_frame=Config.OCR_MAX_PLATES_PER_FRAME,
     ocr_min_detection_confidence=Config.OCR_MIN_DETECTION_CONFIDENCE,
+    ocr_zone_x1=Config.OCR_ZONE_X1,
+    ocr_zone_y1=Config.OCR_ZONE_Y1,
+    ocr_zone_x2=Config.OCR_ZONE_X2,
+    ocr_zone_y2=Config.OCR_ZONE_Y2,
+    ocr_zone_min_overlap=Config.OCR_ZONE_MIN_OVERLAP,
     camera_backend=Config.CAMERA_BACKEND,
     camera_width=Config.CAMERA_WIDTH,
     camera_height=Config.CAMERA_HEIGHT,
@@ -98,6 +114,9 @@ SPEED_CONFIG_ENV_KEYS = {
     "roi_x1": "SPEED_ROI_X1",
     "roi_x2": "SPEED_ROI_X2",
     "distance_meters": "SPEED_DISTANCE_METERS",
+}
+EMAIL_CONFIG_ENV_KEYS = {
+    "enabled": "EMAIL_INCIDENTS_ENABLED",
 }
 
 
@@ -244,7 +263,46 @@ def incidencia_detalle(incident_id):
     incident = incident_service.get_incident(incident_id)
     if incident is None:
         return render_template("incidencia_no_encontrada.html", active_page="incidencias"), 404
-    return render_template("incidencia_detalle.html", incident=incident, active_page="incidencias")
+    return render_template(
+        "incidencia_detalle.html",
+        incident=incident,
+        active_page="incidencias",
+        email_status=request.args.get("email_status", ""),
+    )
+
+
+@app.route("/incidencias/<incident_id>/enviar_correo", methods=["POST"])
+def enviar_correo_incidencia(incident_id):
+    result = incident_service.send_incident_email(incident_id)
+    if result.get("already_sent"):
+        status = "already"
+    elif result.get("ok"):
+        status = "sent"
+    else:
+        status = "error"
+
+    return redirect(url_for("incidencia_detalle", incident_id=incident_id, email_status=status))
+
+
+@app.route("/actividad")
+def actividad():
+    return render_template(
+        "actividad.html",
+        activity=incident_service.list_activity(),
+        active_page="actividad",
+    )
+
+
+@app.route("/actividad/<activity_id>")
+def actividad_detalle(activity_id):
+    item = incident_service.get_activity(activity_id)
+    if item is None:
+        return render_template("actividad_no_encontrada.html", active_page="actividad"), 404
+    return render_template(
+        "actividad_detalle.html",
+        item=item,
+        active_page="actividad",
+    )
 
 
 @app.route("/configuracion")
@@ -322,6 +380,52 @@ def speed_config():
         update_env_values(env_values)
 
     return jsonify({"ok": True, "config": updated})
+
+
+@app.route("/api/ocr_zone_config", methods=["GET", "POST"])
+def ocr_zone_config():
+    if request.method == "GET":
+        return jsonify({"ok": True, "config": stream.current_ocr_zone_config()})
+
+    payload = request.get_json(silent=True) or {}
+    accepted = {}
+    for field in {"x1", "y1", "x2", "y2"}:
+        if field not in payload:
+            continue
+        try:
+            accepted[field] = float(payload[field])
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
+
+    updated = stream.update_ocr_zone_config(**accepted)
+    return jsonify({"ok": True, "config": updated})
+
+
+@app.route("/api/mamdani_config", methods=["GET", "POST"])
+def mamdani_config():
+    if request.method == "GET":
+        return jsonify({"ok": True, "config": get_mamdani_config()})
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        updated = set_mamdani_config(payload)
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "config": updated})
+
+
+@app.route("/api/email_config", methods=["GET", "POST"])
+def email_config():
+    if request.method == "GET":
+        current = incident_service.current_email_config()
+        return jsonify({"ok": True, "config": {"enabled": current["enabled"]}})
+
+    payload = request.get_json(silent=True) or {}
+    enabled = bool(payload.get("enabled", False))
+    updated = incident_service.update_email_config(enabled=enabled)
+    update_env_values({"EMAIL_INCIDENTS_ENABLED": "1" if updated["enabled"] else "0"})
+    return jsonify({"ok": True, "config": {"enabled": updated["enabled"]}})
 
 
 @app.route("/video_feed")

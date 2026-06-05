@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Actividad</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    {% include "_tailwind_config.html" %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body class="min-h-screen bg-white font-onest text-slate-950">
+    {% include "_topbar.html" %}
+
+    <main class="mx-auto w-[min(1360px,calc(100%-32px))] py-6">
+      <div class="mb-5">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Foto radar universitario</p>
+        <h2 class="mt-1 text-xl font-semibold">Actividad detectada</h2>
+      </div>
+      <div class="overflow-x-auto border border-slate-200">
+        <table class="w-full min-w-[980px] border-collapse text-sm">
+          <thead class="bg-slate-50 text-left text-xs uppercase tracking-[0.08em] text-slate-500">
+            <tr>
+              <th class="border-b border-slate-200 px-3 py-3">Recorte</th>
+              <th class="border-b border-slate-200 px-3 py-3">Fecha/hora</th>
+              <th class="border-b border-slate-200 px-3 py-3">Placa</th>
+              <th class="border-b border-slate-200 px-3 py-3">Velocidad</th>
+              <th class="border-b border-slate-200 px-3 py-3">Confianza</th>
+              <th class="border-b border-slate-200 px-3 py-3">Vehiculo</th>
+              <th class="border-b border-slate-200 px-3 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in activity %}
+            <tr class="hover:bg-radar-50/60">
+              <td class="border-b border-slate-100 px-3 py-3">
+                <img class="h-14 w-28 border border-slate-200 object-contain" src="{{ url_for('static', filename=item.crop_path) }}" alt="Recorte de placa">
+              </td>
+              <td class="border-b border-slate-100 px-3 py-3">
+                <div class="font-semibold">{{ item.started_at }}</div>
+                <div class="text-xs text-slate-500">Fin {{ item.ended_at }} · {{ "%.1f"|format(item.duration_seconds) }} s</div>
+              </td>
+              <td class="border-b border-slate-100 px-3 py-3 font-semibold">{{ item.plate_text or "Sin lectura" }}</td>
+              <td class="border-b border-slate-100 px-3 py-3">
+                {% if item.speed_kmh is not none %}{{ "%.1f"|format(item.speed_kmh) }} km/h{% else %}<span class="text-slate-400">--</span>{% endif %}
+              </td>
+              <td class="border-b border-slate-100 px-3 py-3">
+                <div>{{ "%.1f"|format(item.detection_confidence * 100) }}%</div>
+                {% if item.plate_confidence %}<div class="text-xs text-radar-700">OCR {{ "%.1f"|format(item.plate_confidence * 100) }}%</div>{% endif %}
+              </td>
+              <td class="border-b border-slate-100 px-3 py-3">{{ item.vehicle_brand }} {{ item.vehicle_model }} {{ item.vehicle_color }}</td>
+              <td class="border-b border-slate-100 px-3 py-3 text-right">
+                <a class="rounded-[4px] bg-radar-700 px-3 py-2 text-xs font-semibold text-white hover:bg-radar-600" href="{{ url_for('actividad_detalle', activity_id=item.id) }}">Ver detalle</a>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td class="px-3 py-10 text-center text-slate-500" colspan="7">Todavia no hay actividad registrada.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </body>
+</html>

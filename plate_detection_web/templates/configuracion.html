@@ -21,18 +21,23 @@
             <div id="lineEditor" class="config-video-stage bg-slate-950">
               <img id="configFrame" class="block h-full w-full bg-slate-950 object-contain" src="{{ url_for('current_frame') }}" alt="Vista de configuracion">
               <svg id="lineOverlay" class="line-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <rect id="ocrZoneRect" class="ocr-zone-rect" x="0" y="0" width="100" height="100"></rect>
                 <line id="lineA" class="config-line-a" x1="0" y1="36" x2="100" y2="32"></line>
                 <line id="lineB" class="config-line-b" x1="0" y1="66" x2="100" y2="63"></line>
                 <circle id="handleALeft" class="line-handle line-handle-a" r="1.5" data-key="line_a_left_y"></circle>
                 <circle id="handleARight" class="line-handle line-handle-a" r="1.5" data-key="line_a_right_y"></circle>
                 <circle id="handleBLeft" class="line-handle line-handle-b" r="1.5" data-key="line_b_left_y"></circle>
                 <circle id="handleBRight" class="line-handle line-handle-b" r="1.5" data-key="line_b_right_y"></circle>
+                <circle id="ocrHandleTopLeft" class="ocr-zone-handle" r="1.6" data-corner="top_left"></circle>
+                <circle id="ocrHandleTopRight" class="ocr-zone-handle" r="1.6" data-corner="top_right"></circle>
+                <circle id="ocrHandleBottomLeft" class="ocr-zone-handle" r="1.6" data-corner="bottom_left"></circle>
+                <circle id="ocrHandleBottomRight" class="ocr-zone-handle" r="1.6" data-corner="bottom_right"></circle>
               </svg>
             </div>
           </section>
         </div>
 
-        <aside class="min-w-0 border-y border-slate-200 bg-white py-5 lg:border-y-0 lg:border-l lg:py-1 lg:pl-5">
+        <aside class="min-w-0 border-y border-slate-200 bg-white py-5 lg:border-y-0 lg:py-1 lg:pl-5">
           <section class="info-panel">
             <div class="mb-4">
               <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Configuracion</p>
@@ -76,10 +81,105 @@
                 </div>
               </div>
 
+              <div class="grid gap-3 border-t border-slate-200 pt-4 text-sm">
+                <div>
+                  <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Zona OCR</p>
+                  <p class="mt-1 text-xs text-slate-500">El OCR se ejecuta solo cuando la placa entra en este rectangulo.</p>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Izquierda</span>
+                    <span id="ocrX1Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Derecha</span>
+                    <span id="ocrX2Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Superior</span>
+                    <span id="ocrY1Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-slate-600">Inferior</span>
+                    <span id="ocrY2Value" class="font-semibold text-radar-700">--</span>
+                  </div>
+                </div>
+                <button id="ocrFullFrameButton" class="h-9 rounded-[4px] border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:border-radar-600 hover:text-radar-700" type="button">
+                  Usar toda la pantalla
+                </button>
+              </div>
+
               <p id="saveStatus" class="min-h-[20px] text-sm font-semibold text-slate-500"></p>
             </div>
           </section>
+
+          <section class="info-panel mt-4">
+            <div class="mb-4">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Correo</p>
+              <h2 class="mt-1 text-lg font-semibold text-slate-950">Incidencias</h2>
+            </div>
+
+            <div class="grid gap-3">
+              <label class="flex items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                <span>Enviar correos</span>
+                <input id="emailEnabled" class="h-5 w-5 accent-radar-700" type="checkbox">
+              </label>
+
+              <button id="emailSaveButton" class="h-10 rounded-[4px] bg-radar-700 px-3 text-sm font-semibold text-white hover:bg-radar-600" type="button">
+                Guardar preferencia
+              </button>
+              <p id="emailStatus" class="min-h-[20px] text-sm font-semibold text-slate-500"></p>
+            </div>
+          </section>
+
         </aside>
+      </section>
+
+      <section class="info-panel mt-6">
+        <div class="mb-4">
+          <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Mamdani</p>
+          <h2 class="mt-1 text-lg font-semibold text-slate-950">Rangos de decision</h2>
+        </div>
+
+        <div class="grid gap-5">
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label class="grid gap-1 text-sm">
+              <span class="font-semibold text-slate-700">Inicio de multas</span>
+              <div class="flex items-center gap-2">
+                <input id="mamdaniMinSpeed" class="h-10 w-full rounded-[4px] border border-slate-300 px-3 text-sm font-semibold outline-none focus:border-radar-700" type="number" min="0" step="0.1">
+                <span class="text-sm font-semibold text-slate-500">km/h</span>
+              </div>
+            </label>
+            <label class="grid gap-1 text-sm">
+              <span class="font-semibold text-slate-700">Maximo grafica</span>
+              <div class="flex items-center gap-2">
+                <input id="mamdaniMaxSpeed" class="h-10 w-full rounded-[4px] border border-slate-300 px-3 text-sm font-semibold outline-none focus:border-radar-700" type="number" min="1" step="0.1">
+                <span class="text-sm font-semibold text-slate-500">km/h</span>
+              </div>
+            </label>
+          </div>
+
+          <div class="grid gap-6">
+            <section class="grid gap-3 border-t border-slate-200 pt-4">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Entrada: velocidad</p>
+              <div id="mamdaniInputSets" class="mamdani-set-grid mamdani-set-grid-input"></div>
+              <canvas id="mamdaniInputChart" class="mamdani-chart" height="240"></canvas>
+            </section>
+
+            <section class="grid gap-3 border-t border-slate-200 pt-4">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Salida: penalizacion</p>
+              <div id="mamdaniOutputSets" class="mamdani-set-grid"></div>
+              <canvas id="mamdaniOutputChart" class="mamdani-chart" height="240"></canvas>
+            </section>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3">
+            <button id="mamdaniSaveButton" class="h-10 rounded-[4px] bg-radar-700 px-3 text-sm font-semibold text-white hover:bg-radar-600" type="button">
+              Guardar Mamdani
+            </button>
+            <p id="mamdaniStatus" class="min-h-[20px] text-sm font-semibold text-slate-500"></p>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -88,20 +188,53 @@
       const lineOverlay = document.getElementById("lineOverlay");
       const lineA = document.getElementById("lineA");
       const lineB = document.getElementById("lineB");
+      const ocrZoneRect = document.getElementById("ocrZoneRect");
       const handleALeft = document.getElementById("handleALeft");
       const handleARight = document.getElementById("handleARight");
       const handleBLeft = document.getElementById("handleBLeft");
       const handleBRight = document.getElementById("handleBRight");
+      const ocrZoneHandles = Array.from(document.querySelectorAll(".ocr-zone-handle"));
+      const ocrFullFrameButton = document.getElementById("ocrFullFrameButton");
       const distanceInput = document.getElementById("distanceInput");
       const saveButton = document.getElementById("saveButton");
       const liveButton = document.getElementById("liveButton");
       const saveStatus = document.getElementById("saveStatus");
+      const mamdaniMinSpeed = document.getElementById("mamdaniMinSpeed");
+      const mamdaniMaxSpeed = document.getElementById("mamdaniMaxSpeed");
+      const mamdaniInputSets = document.getElementById("mamdaniInputSets");
+      const mamdaniOutputSets = document.getElementById("mamdaniOutputSets");
+      const mamdaniInputChart = document.getElementById("mamdaniInputChart");
+      const mamdaniOutputChart = document.getElementById("mamdaniOutputChart");
+      const mamdaniSaveButton = document.getElementById("mamdaniSaveButton");
+      const mamdaniStatus = document.getElementById("mamdaniStatus");
+      const emailEnabled = document.getElementById("emailEnabled");
+      const emailSaveButton = document.getElementById("emailSaveButton");
+      const emailStatus = document.getElementById("emailStatus");
+      const mamdaniOrders = {
+        input_sets: ["Riesgo leve", "Riesgo moderado", "Riesgo grave"],
+        output_sets: ["Leve", "Moderada", "Grave", "Muy grave"],
+      };
+      const mamdaniColors = {
+        "Riesgo leve": "#0b66c3",
+        "Riesgo moderado": "#f59e0b",
+        "Riesgo grave": "#dc2626",
+        "Leve": "#0b66c3",
+        "Moderada": "#f59e0b",
+        "Grave": "#dc2626",
+        "Muy grave": "#7c3aed",
+      };
       const handles = Array.from(document.querySelectorAll(".line-handle"));
       const values = {
         line_a_left_y: document.getElementById("lineALeftValue"),
         line_a_right_y: document.getElementById("lineARightValue"),
         line_b_left_y: document.getElementById("lineBLeftValue"),
         line_b_right_y: document.getElementById("lineBRightValue"),
+      };
+      const ocrValues = {
+        x1: document.getElementById("ocrX1Value"),
+        x2: document.getElementById("ocrX2Value"),
+        y1: document.getElementById("ocrY1Value"),
+        y2: document.getElementById("ocrY2Value"),
       };
       const config = {
         line_a_left_y: 0.36,
@@ -112,9 +245,25 @@
         roi_x2: 1,
         distance_meters: 5,
       };
+      const ocrConfig = {
+        x1: 0,
+        y1: 0,
+        x2: 1,
+        y2: 1,
+      };
       let activeHandle = null;
+      let activeOcrHandle = null;
       let pendingTimer = null;
       let liveStarted = false;
+      let mamdaniConfig = {
+        min_speed: 20,
+        max_speed: 60,
+        input_sets: {},
+        output_sets: {},
+      };
+      let emailConfig = {
+        enabled: false,
+      };
 
       function clamp(value, min, max) {
         return Math.min(max, Math.max(min, value));
@@ -157,17 +306,336 @@
         distanceInput.value = Number(config.distance_meters || 5).toFixed(1);
       }
 
+      function drawOcrZone() {
+        const x1 = clamp(Number(ocrConfig.x1 || 0), 0, 1) * 100;
+        const y1 = clamp(Number(ocrConfig.y1 || 0), 0, 1) * 100;
+        const x2 = clamp(Number(ocrConfig.x2 || 1), 0, 1) * 100;
+        const y2 = clamp(Number(ocrConfig.y2 || 1), 0, 1) * 100;
+        const left = Math.min(x1, x2);
+        const right = Math.max(x1, x2);
+        const top = Math.min(y1, y2);
+        const bottom = Math.max(y1, y2);
+
+        ocrZoneRect.setAttribute("x", left);
+        ocrZoneRect.setAttribute("y", top);
+        ocrZoneRect.setAttribute("width", Math.max(2, right - left));
+        ocrZoneRect.setAttribute("height", Math.max(2, bottom - top));
+
+        const points = {
+          top_left: [left, top],
+          top_right: [right, top],
+          bottom_left: [left, bottom],
+          bottom_right: [right, bottom],
+        };
+        ocrZoneHandles.forEach((handle) => {
+          const point = points[handle.dataset.corner];
+          if (!point) return;
+          handle.setAttribute("cx", point[0]);
+          handle.setAttribute("cy", point[1]);
+        });
+
+        ocrValues.x1.textContent = percent(left / 100);
+        ocrValues.x2.textContent = percent(right / 100);
+        ocrValues.y1.textContent = percent(top / 100);
+        ocrValues.y2.textContent = percent(bottom / 100);
+      }
+
+      function drawEditor() {
+        drawLines();
+        drawOcrZone();
+      }
+
       async function loadConfig() {
-        const response = await fetch("/api/speed_config", { cache: "no-store" });
+        const [speedResponse, ocrResponse] = await Promise.all([
+          fetch("/api/speed_config", { cache: "no-store" }),
+          fetch("/api/ocr_zone_config", { cache: "no-store" }),
+        ]);
+        const speedData = await speedResponse.json();
+        const ocrData = await ocrResponse.json();
+        if (speedData.ok) Object.assign(config, speedData.config);
+        if (ocrData.ok) Object.assign(ocrConfig, ocrData.config);
+        drawEditor();
+      }
+
+      function setMamdaniStatus(text, ok = true) {
+        mamdaniStatus.textContent = text;
+        mamdaniStatus.className = `min-h-[20px] text-sm font-semibold ${ok ? "text-radar-700" : "text-red-700"}`;
+      }
+
+      function pointLabel(index) {
+        return ["a", "b", "c", "d"][index] || String(index + 1);
+      }
+
+      function renderMamdaniSetInputs(container, group, sets) {
+        container.innerHTML = "";
+        const orderedNames = mamdaniOrders[group] || Object.keys(sets);
+        orderedNames
+          .filter((name) => sets[name])
+          .forEach((name) => {
+          const set = sets[name];
+          const row = document.createElement("div");
+          row.className = "grid gap-2 border border-slate-200 p-3";
+
+          const title = document.createElement("div");
+          title.className = "flex items-center justify-between gap-2";
+          title.innerHTML = `<span class="text-sm font-semibold text-slate-800">${name}</span><span class="text-[11px] font-semibold uppercase text-slate-500">${set.kind}</span>`;
+          row.appendChild(title);
+
+          const grid = document.createElement("div");
+          grid.className = "grid grid-cols-4 gap-2";
+          set.params.forEach((value, index) => {
+            const label = document.createElement("label");
+            label.className = "grid gap-1 text-xs font-semibold text-slate-500";
+            label.innerHTML = `
+              <span>${pointLabel(index)}</span>
+              <input class="h-9 min-w-0 rounded-[4px] border border-slate-300 px-2 text-sm font-semibold text-slate-950 outline-none focus:border-radar-700"
+                type="number"
+                step="0.1"
+                data-mamdani-point="1"
+                data-group="${group}"
+                data-name="${name}"
+                data-index="${index}"
+                value="${Number(value).toFixed(1)}">
+            `;
+            grid.appendChild(label);
+          });
+          row.appendChild(grid);
+          container.appendChild(row);
+        });
+      }
+
+      function triangularValue(x, params) {
+        const [a, b, c] = params.map(Number);
+        if (x <= a || x >= c) return 0;
+        if (x === b) return 1;
+        return x < b ? (x - a) / Math.max(0.0001, b - a) : (c - x) / Math.max(0.0001, c - b);
+      }
+
+      function trapezoidalValue(x, params) {
+        const [a, b, c, d] = params.map(Number);
+        if (x < a || x > d) return 0;
+        if (x >= b && x <= c) return 1;
+        if (x < b) return b === a ? 1 : (x - a) / Math.max(0.0001, b - a);
+        return d === c ? 1 : (d - x) / Math.max(0.0001, d - c);
+      }
+
+      function membershipValue(x, set) {
+        const value = set.kind === "tri"
+          ? triangularValue(x, set.params)
+          : trapezoidalValue(x, set.params);
+        return clamp(value, 0, 1);
+      }
+
+      function prepareCanvas(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const pixelRatio = window.devicePixelRatio || 1;
+        const width = Math.max(320, rect.width || canvas.clientWidth || 320);
+        const height = 240;
+        canvas.width = Math.round(width * pixelRatio);
+        canvas.height = Math.round(height * pixelRatio);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        return { ctx, width, height };
+      }
+
+      function drawMembershipChart(canvas, sets, order, xMin, xMax, unit) {
+        const { ctx, width, height } = prepareCanvas(canvas);
+        const padding = { left: 46, right: 18, top: 18, bottom: 34 };
+        const chartWidth = width - padding.left - padding.right;
+        const chartHeight = height - padding.top - padding.bottom;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.strokeStyle = "#dbe3ee";
+        ctx.strokeRect(padding.left, padding.top, chartWidth, chartHeight);
+
+        ctx.fillStyle = "#64748b";
+        ctx.font = "11px Onest, Segoe UI, sans-serif";
+        for (let index = 0; index <= 5; index += 1) {
+          const ratio = index / 5;
+          const x = padding.left + chartWidth * ratio;
+          const value = xMin + (xMax - xMin) * ratio;
+          ctx.strokeStyle = "#edf2f7";
+          ctx.beginPath();
+          ctx.moveTo(x, padding.top);
+          ctx.lineTo(x, padding.top + chartHeight);
+          ctx.stroke();
+          ctx.fillText(String(Math.round(value)), x - 8, height - 12);
+        }
+        for (let index = 0; index <= 4; index += 1) {
+          const ratio = index / 4;
+          const y = padding.top + chartHeight - chartHeight * ratio;
+          ctx.strokeStyle = "#edf2f7";
+          ctx.beginPath();
+          ctx.moveTo(padding.left, y);
+          ctx.lineTo(padding.left + chartWidth, y);
+          ctx.stroke();
+          ctx.fillText(ratio.toFixed(2), 8, y + 4);
+        }
+        ctx.fillText(unit, padding.left + chartWidth / 2 - 12, height - 4);
+
+        order.filter((name) => sets[name]).forEach((name, setIndex) => {
+          const set = sets[name];
+          const color = mamdaniColors[name] || "#0b66c3";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          for (let step = 0; step <= 240; step += 1) {
+            const ratio = step / 240;
+            const value = xMin + (xMax - xMin) * ratio;
+            const x = padding.left + chartWidth * ratio;
+            const y = padding.top + chartHeight - membershipValue(value, set) * chartHeight;
+            if (step === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+
+          const legendX = padding.left + 14 + setIndex * 148;
+          const legendY = padding.top + 18;
+          ctx.strokeStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(legendX, legendY);
+          ctx.lineTo(legendX + 24, legendY);
+          ctx.stroke();
+          ctx.fillStyle = "#334155";
+          ctx.fillText(name, legendX + 30, legendY + 4);
+        });
+      }
+
+      function maxOutputValue() {
+        const values = Object.values(mamdaniConfig.output_sets || {})
+          .flatMap((set) => set.params || [])
+          .map(Number)
+          .filter(Number.isFinite);
+        return Math.max(1, ...values);
+      }
+
+      function drawMamdaniPreviews() {
+        readMamdaniInputs();
+        drawMembershipChart(
+          mamdaniInputChart,
+          mamdaniConfig.input_sets || {},
+          mamdaniOrders.input_sets,
+          Number(mamdaniConfig.min_speed || 20),
+          Number(mamdaniConfig.max_speed || 60),
+          "km/h",
+        );
+        drawMembershipChart(
+          mamdaniOutputChart,
+          mamdaniConfig.output_sets || {},
+          mamdaniOrders.output_sets,
+          0,
+          maxOutputValue(),
+          "h",
+        );
+      }
+
+      function drawMamdaniConfig() {
+        mamdaniMinSpeed.value = Number(mamdaniConfig.min_speed || 20).toFixed(1);
+        mamdaniMaxSpeed.value = Number(mamdaniConfig.max_speed || 60).toFixed(1);
+        renderMamdaniSetInputs(mamdaniInputSets, "input_sets", mamdaniConfig.input_sets || {});
+        renderMamdaniSetInputs(mamdaniOutputSets, "output_sets", mamdaniConfig.output_sets || {});
+        drawMamdaniPreviews();
+      }
+
+      function readMamdaniInputs() {
+        const minSpeed = Number(mamdaniMinSpeed.value);
+        const maxSpeed = Number(mamdaniMaxSpeed.value);
+        if (Number.isFinite(minSpeed)) mamdaniConfig.min_speed = minSpeed;
+        if (Number.isFinite(maxSpeed)) mamdaniConfig.max_speed = maxSpeed;
+
+        document.querySelectorAll("[data-mamdani-point]").forEach((input) => {
+          const value = Number(input.value);
+          if (!Number.isFinite(value)) return;
+          const set = mamdaniConfig[input.dataset.group]?.[input.dataset.name];
+          if (!set) return;
+          set.params[Number(input.dataset.index)] = value;
+        });
+      }
+
+      function syncMamdaniStartRange() {
+        readMamdaniInputs();
+        const lightRisk = mamdaniConfig.input_sets?.["Riesgo leve"];
+        if (lightRisk && Array.isArray(lightRisk.params)) {
+          lightRisk.params[0] = mamdaniConfig.min_speed;
+          if (lightRisk.kind === "trap" && lightRisk.params.length > 1) {
+            lightRisk.params[1] = mamdaniConfig.min_speed;
+          }
+        }
+        drawMamdaniConfig();
+      }
+
+      async function loadMamdaniConfig() {
+        const response = await fetch("/api/mamdani_config", { cache: "no-store" });
         const data = await response.json();
         if (!data.ok) return;
-        Object.assign(config, data.config);
-        drawLines();
+        mamdaniConfig = data.config;
+        drawMamdaniConfig();
+      }
+
+      function setEmailStatus(text, ok = true) {
+        emailStatus.textContent = text;
+        emailStatus.className = `min-h-[20px] text-sm font-semibold ${ok ? "text-radar-700" : "text-red-700"}`;
+      }
+
+      function drawEmailConfig() {
+        emailEnabled.checked = Boolean(emailConfig.enabled);
+      }
+
+      async function loadEmailConfig() {
+        const response = await fetch("/api/email_config", { cache: "no-store" });
+        const data = await response.json();
+        if (!data.ok) return;
+        emailConfig = data.config;
+        drawEmailConfig();
+      }
+
+      async function saveEmailConfig() {
+        const payload = {
+          enabled: emailEnabled.checked,
+        };
+
+        const response = await fetch("/api/email_config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          setEmailStatus(data.error || "No se pudo guardar correo", false);
+          return;
+        }
+        emailConfig = data.config;
+        drawEmailConfig();
+        setEmailStatus("Configuracion de correo guardada");
+      }
+
+      async function saveMamdaniConfig() {
+        readMamdaniInputs();
+        const response = await fetch("/api/mamdani_config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(mamdaniConfig),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          setMamdaniStatus(data.error || "No se pudo guardar Mamdani", false);
+          return;
+        }
+        mamdaniConfig = data.config;
+        drawMamdaniConfig();
+        setMamdaniStatus("Configuracion Mamdani guardada");
       }
 
       function scheduleSave() {
         window.clearTimeout(pendingTimer);
         pendingTimer = window.setTimeout(() => saveConfig("Configuracion aplicada"), 180);
+      }
+
+      function scheduleOcrSave() {
+        window.clearTimeout(pendingTimer);
+        pendingTimer = window.setTimeout(() => saveOcrConfig("Zona OCR aplicada"), 180);
       }
 
       async function saveConfig(message = "Configuracion guardada") {
@@ -176,27 +644,76 @@
           config.distance_meters = distance;
         }
 
-        const response = await fetch("/api/speed_config", {
+        const speedResponse = await fetch("/api/speed_config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(config),
         });
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-          saveStatus.textContent = data.error || "No se pudo guardar";
+        const speedData = await speedResponse.json();
+        if (!speedResponse.ok || !speedData.ok) {
+          saveStatus.textContent = speedData.error || "No se pudo guardar";
           saveStatus.className = "min-h-[20px] text-sm font-semibold text-red-700";
           return;
         }
 
-        Object.assign(config, data.config);
+        Object.assign(config, speedData.config);
         drawLines();
         saveStatus.textContent = message;
         saveStatus.className = "min-h-[20px] text-sm font-semibold text-radar-700";
       }
 
+      async function saveOcrConfig(message = "Zona OCR guardada") {
+        const ocrResponse = await fetch("/api/ocr_zone_config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ocrConfig),
+        });
+        const ocrData = await ocrResponse.json();
+        if (!ocrResponse.ok || !ocrData.ok) {
+          saveStatus.textContent = ocrData.error || "No se pudo guardar zona OCR";
+          saveStatus.className = "min-h-[20px] text-sm font-semibold text-red-700";
+          return;
+        }
+
+        Object.assign(ocrConfig, ocrData.config);
+        drawOcrZone();
+        saveStatus.textContent = message;
+        saveStatus.className = "min-h-[20px] text-sm font-semibold text-radar-700";
+      }
+
+      async function saveEditorConfig(message = "Configuracion guardada") {
+        await saveConfig(message);
+        await saveOcrConfig(message);
+      }
+
       function pointerToNormalizedY(event) {
         const rect = lineOverlay.getBoundingClientRect();
         return clamp((event.clientY - rect.top) / rect.height, 0, 1);
+      }
+
+      function pointerToNormalizedPoint(event) {
+        const rect = lineOverlay.getBoundingClientRect();
+        return {
+          x: clamp((event.clientX - rect.left) / rect.width, 0, 1),
+          y: clamp((event.clientY - rect.top) / rect.height, 0, 1),
+        };
+      }
+
+      function updateOcrZoneCorner(corner, point) {
+        const minSize = 0.04;
+        if (corner === "top_left") {
+          ocrConfig.x1 = clamp(point.x, 0, ocrConfig.x2 - minSize);
+          ocrConfig.y1 = clamp(point.y, 0, ocrConfig.y2 - minSize);
+        } else if (corner === "top_right") {
+          ocrConfig.x2 = clamp(point.x, ocrConfig.x1 + minSize, 1);
+          ocrConfig.y1 = clamp(point.y, 0, ocrConfig.y2 - minSize);
+        } else if (corner === "bottom_left") {
+          ocrConfig.x1 = clamp(point.x, 0, ocrConfig.x2 - minSize);
+          ocrConfig.y2 = clamp(point.y, ocrConfig.y1 + minSize, 1);
+        } else if (corner === "bottom_right") {
+          ocrConfig.x2 = clamp(point.x, ocrConfig.x1 + minSize, 1);
+          ocrConfig.y2 = clamp(point.y, ocrConfig.y1 + minSize, 1);
+        }
       }
 
       handles.forEach((handle) => {
@@ -218,8 +735,43 @@
         });
       });
 
+      ocrZoneHandles.forEach((handle) => {
+        handle.addEventListener("pointerdown", (event) => {
+          activeOcrHandle = handle;
+          handle.setPointerCapture(event.pointerId);
+        });
+
+        handle.addEventListener("pointermove", (event) => {
+          if (activeOcrHandle !== handle) return;
+          updateOcrZoneCorner(handle.dataset.corner, pointerToNormalizedPoint(event));
+          drawOcrZone();
+          scheduleOcrSave();
+        });
+
+        handle.addEventListener("pointerup", () => {
+          activeOcrHandle = null;
+          saveOcrConfig("Zona OCR aplicada");
+        });
+      });
+
+      ocrFullFrameButton.addEventListener("click", () => {
+        Object.assign(ocrConfig, { x1: 0, y1: 0, x2: 1, y2: 1 });
+        drawOcrZone();
+        saveOcrConfig("Zona OCR en toda la pantalla");
+      });
+
       distanceInput.addEventListener("change", () => saveConfig());
-      saveButton.addEventListener("click", () => saveConfig());
+      saveButton.addEventListener("click", () => saveEditorConfig());
+      document.addEventListener("input", (event) => {
+        if (event.target.matches("[data-mamdani-point], #mamdaniMinSpeed, #mamdaniMaxSpeed")) {
+          drawMamdaniPreviews();
+        }
+      });
+      mamdaniMinSpeed.addEventListener("change", syncMamdaniStartRange);
+      mamdaniMaxSpeed.addEventListener("change", drawMamdaniPreviews);
+      mamdaniSaveButton.addEventListener("click", saveMamdaniConfig);
+      emailSaveButton.addEventListener("click", saveEmailConfig);
+      window.addEventListener("resize", drawMamdaniPreviews);
       liveButton.addEventListener("click", () => {
         liveStarted = !liveStarted;
         configFrame.src = liveStarted ? `/video_feed?t=${Date.now()}` : `/current_frame?t=${Date.now()}`;
@@ -233,6 +785,8 @@
       }, 1200);
 
       loadConfig();
+      loadMamdaniConfig();
+      loadEmailConfig();
     </script>
   </body>
 </html>

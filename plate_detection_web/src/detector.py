@@ -34,6 +34,7 @@ class PlateDetector:
         result = self.model.predict(
             source=frame,
             conf=self.confidence_threshold,
+            iou=self.iou_threshold,
             imgsz=self.image_size,
             device=self.device,
             verbose=False,
@@ -60,7 +61,7 @@ class PlateDetector:
                 }
             )
 
-        return detections
+        return self._deduplicate_detections(detections)
 
     def track(self, frame):
         result = self.model.track(
@@ -74,7 +75,7 @@ class PlateDetector:
             verbose=False,
         )[0]
 
-        return self._result_to_detections(result)
+        return self._deduplicate_detections(self._result_to_detections(result))
 
     def _result_to_detections(self, result):
         detections = []
@@ -104,6 +105,110 @@ class PlateDetector:
             )
 
         return detections
+
+    def _deduplicate_detections(self, detections):
+        kept = []
+        for detection in sorted(
+            detections,
+            key=lambda item: item.get("confidence", 0.0),
+            reverse=True,
+        ):
+            duplicate_index = None
+            for index, current in enumerate(kept):
+                if self._same_plate_candidate(detection, current):
+                    duplicate_index = index
+                    break
+
+            if duplicate_index is None:
+                kept.append(detection)
+                continue
+
+            current = kept[duplicate_index]
+            if self._prefer_detection(detection, current):
+                kept[duplicate_index] = detection
+
+        return sorted(kept, key=lambda item: item.get("confidence", 0.0), reverse=True)
+
+    def _same_plate_candidate(self, first, second):
+        overlap = self._box_iou(first, second)
+        if overlap >= self.iou_threshold:
+            return True
+
+        containment = self._intersection_over_smaller_box(first, second)
+        if containment >= 0.72:
+            return True
+
+        first_center = self._center(first)
+        second_center = self._center(second)
+        first_width, first_height = self._size(first)
+        second_width, second_height = self._size(second)
+        distance = (
+            (first_center[0] - second_center[0]) ** 2
+            + (first_center[1] - second_center[1]) ** 2
+        ) ** 0.5
+        distance_limit = max(first_width, second_width, first_height, second_height) * 0.24
+        width_ratio = min(first_width, second_width) / max(first_width, second_width, 1.0)
+        height_ratio = min(first_height, second_height) / max(first_height, second_height, 1.0)
+
+        return distance <= distance_limit and width_ratio >= 0.62 and height_ratio >= 0.62
+
+    @staticmethod
+    def _prefer_detection(candidate, current):
+        confidence_gap = candidate.get("confidence", 0.0) - current.get("confidence", 0.0)
+        if abs(confidence_gap) > 0.12:
+            return confidence_gap > 0
+
+        candidate_area = PlateDetector._area(candidate)
+        current_area = PlateDetector._area(current)
+        if candidate_area <= current_area * 0.80:
+            return True
+        if current_area <= candidate_area * 0.80:
+            return False
+
+        return confidence_gap > 0
+
+    @staticmethod
+    def _size(detection):
+        return (
+            max(1.0, float(detection["x2"]) - float(detection["x1"])),
+            max(1.0, float(detection["y2"]) - float(detection["y1"])),
+        )
+
+    @staticmethod
+    def _area(detection):
+        width, height = PlateDetector._size(detection)
+        return width * height
+
+    @staticmethod
+    def _center(detection):
+        return (
+            (float(detection["x1"]) + float(detection["x2"])) / 2,
+            (float(detection["y1"]) + float(detection["y2"])) / 2,
+        )
+
+    @staticmethod
+    def _box_iou(first, second):
+        x1 = max(float(first["x1"]), float(second["x1"]))
+        y1 = max(float(first["y1"]), float(second["y1"]))
+        x2 = min(float(first["x2"]), float(second["x2"]))
+        y2 = min(float(first["y2"]), float(second["y2"]))
+        inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        if inter <= 0:
+            return 0.0
+
+        return inter / (PlateDetector._area(first) + PlateDetector._area(second) - inter)
+
+    @staticmethod
+    def _intersection_over_smaller_box(first, second):
+        x1 = max(float(first["x1"]), float(second["x1"]))
+        y1 = max(float(first["y1"]), float(second["y1"]))
+        x2 = min(float(first["x2"]), float(second["x2"]))
+        y2 = min(float(first["y2"]), float(second["y2"]))
+        inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        if inter <= 0:
+            return 0.0
+
+        return inter / max(1.0, min(PlateDetector._area(first), PlateDetector._area(second)))
 
     def _class_name(self, class_id):
         names = self.model.names
