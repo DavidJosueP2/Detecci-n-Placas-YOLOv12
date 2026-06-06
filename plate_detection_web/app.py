@@ -1,15 +1,13 @@
 import base64
-from threading import Lock, Thread
-from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
-from werkzeug.utils import secure_filename
+from flask import Flask, Response, redirect, render_template, request, url_for
 
+from blueprints.api_bp import api_bp
+from blueprints.video_bp import video_bp
 from config import Config
 from src.detector import PlateDetector
-from src.fuzzy_mamdani import get_mamdani_config, set_mamdani_config
 from src.incident_service import IncidentService
 from src.plate_reader import PlateReader
 from src.video_stream import VideoStream
@@ -53,6 +51,7 @@ if Config.USE_CNN_RECOGNIZER:
         plate_reader = CharRecognizer(
             model_path=str(Config.CNN_MODEL_PATH),
             device=Config.DEVICE,
+            crop_source=Config.CNN_CROP_SOURCE,
         )
         print(f"[OCR] CharRecognizer cargado: {Config.CNN_MODEL_PATH}")
     except Exception as exc:
@@ -113,118 +112,11 @@ stream = VideoStream(
     detector_error=detector_error or reader_error,
 )
 
+app.stream = stream
+app.incident_service = incident_service
 
-camera_sources_cache = None
-camera_sources_scan_running = False
-camera_sources_lock = Lock()
-
-
-SPEED_CONFIG_ENV_KEYS = {
-    "line_a_left_y": "SPEED_LINE_A_LEFT_Y",
-    "line_a_right_y": "SPEED_LINE_A_RIGHT_Y",
-    "line_b_left_y": "SPEED_LINE_B_LEFT_Y",
-    "line_b_right_y": "SPEED_LINE_B_RIGHT_Y",
-    "roi_x1": "SPEED_ROI_X1",
-    "roi_x2": "SPEED_ROI_X2",
-    "distance_meters": "SPEED_DISTANCE_METERS",
-}
-EMAIL_CONFIG_ENV_KEYS = {
-    "enabled": "EMAIL_INCIDENTS_ENABLED",
-}
-
-
-def camera_backend_candidates():
-    backends = {
-        "msmf": cv2.CAP_MSMF,
-        "any": cv2.CAP_ANY,
-        "auto": cv2.CAP_ANY,
-    }
-    preferred = backends.get(str(Config.CAMERA_BACKEND).strip().lower(), cv2.CAP_MSMF)
-    ordered = [preferred, cv2.CAP_MSMF, cv2.CAP_ANY]
-    unique = []
-    for backend in ordered:
-        if backend not in unique:
-            unique.append(backend)
-    return unique
-
-
-def fallback_camera_sources():
-    configured_source = Config.VIDEO_SOURCE if isinstance(Config.VIDEO_SOURCE, int) else 0
-    values = list(range(max(2, Config.CAMERA_SCAN_LIMIT)))
-    if configured_source not in values:
-        values.insert(0, configured_source)
-    return [{"type": "camera", "value": value, "label": f"Camara {value}"} for value in values]
-
-
-def scan_camera_sources():
-    global camera_sources_cache, camera_sources_scan_running
-
-    cameras = fallback_camera_sources()
-    try:
-        discovered = []
-        backends = camera_backend_candidates()
-
-        for index in range(Config.CAMERA_SCAN_LIMIT):
-            opened = False
-            for backend in backends:
-                capture = cv2.VideoCapture(index, backend)
-                opened = capture.isOpened()
-                capture.release()
-                if opened:
-                    break
-
-            if opened:
-                discovered.append({"type": "camera", "value": index, "label": f"Camara {index}"})
-
-        if discovered:
-            known_values = {item["value"] for item in discovered}
-            for fallback in fallback_camera_sources():
-                if fallback["value"] not in known_values:
-                    discovered.append(fallback)
-            cameras = sorted(discovered, key=lambda item: int(item["value"]))
-    finally:
-        with camera_sources_lock:
-            camera_sources_cache = cameras
-            camera_sources_scan_running = False
-
-
-def start_camera_scan_if_needed():
-    global camera_sources_scan_running
-
-    with camera_sources_lock:
-        if camera_sources_scan_running:
-            return
-        camera_sources_scan_running = True
-
-    Thread(target=scan_camera_sources, daemon=True).start()
-
-
-def update_env_values(values):
-    env_path = Path(__file__).resolve().parent / ".env"
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    pending = {key: str(value) for key, value in values.items()}
-    updated_lines = []
-
-    for line in existing_lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in line:
-            updated_lines.append(line)
-            continue
-
-        key, _ = line.split("=", 1)
-        key = key.strip()
-        if key in pending:
-            updated_lines.append(f"{key}={pending.pop(key)}")
-        else:
-            updated_lines.append(line)
-
-    if pending:
-        if updated_lines and updated_lines[-1].strip():
-            updated_lines.append("")
-        for key, value in pending.items():
-            updated_lines.append(f"{key}={value}")
-
-    env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+app.register_blueprint(video_bp)
+app.register_blueprint(api_bp)
 
 
 def jpeg_data_url(image, quality=82):
@@ -237,17 +129,6 @@ def jpeg_data_url(image, quality=82):
         return ""
     encoded = base64.b64encode(buffer.tobytes()).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
-
-
-def available_camera_sources():
-    with camera_sources_lock:
-        cached = [dict(item) for item in camera_sources_cache] if camera_sources_cache else None
-
-    if cached is not None:
-        return cached
-
-    start_camera_scan_if_needed()
-    return fallback_camera_sources()
 
 
 @app.route("/")
@@ -373,195 +254,14 @@ def ocr_detalle(index):
     )
 
 
-@app.route("/api/speed_config", methods=["GET", "POST"])
-def speed_config():
-    if request.method == "GET":
-        return jsonify({"ok": True, "config": stream.current_speed_config()})
-
-    payload = request.get_json(silent=True) or {}
-    accepted = {}
-    numeric_fields = {
-        "line_a_left_y",
-        "line_a_right_y",
-        "line_b_left_y",
-        "line_b_right_y",
-        "roi_x1",
-        "roi_x2",
-        "distance_meters",
-    }
-    for field in numeric_fields:
-        if field not in payload:
-            continue
-        try:
-            accepted[field] = float(payload[field])
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
-
-    updated = stream.update_speed_config(**accepted)
-    env_values = {
-        env_key: f"{updated[field]:.4f}".rstrip("0").rstrip(".")
-        for field, env_key in SPEED_CONFIG_ENV_KEYS.items()
-        if field in accepted
-    }
-    if env_values:
-        update_env_values(env_values)
-
-    return jsonify({"ok": True, "config": updated})
-
-
-@app.route("/api/ocr_zone_config", methods=["GET", "POST"])
-def ocr_zone_config():
-    if request.method == "GET":
-        return jsonify({"ok": True, "config": stream.current_ocr_zone_config()})
-
-    payload = request.get_json(silent=True) or {}
-    accepted = {}
-    for field in {"x1", "y1", "x2", "y2"}:
-        if field not in payload:
-            continue
-        try:
-            accepted[field] = float(payload[field])
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
-
-    updated = stream.update_ocr_zone_config(**accepted)
-    return jsonify({"ok": True, "config": updated})
-
-
-@app.route("/api/mamdani_config", methods=["GET", "POST"])
-def mamdani_config():
-    if request.method == "GET":
-        return jsonify({"ok": True, "config": get_mamdani_config()})
-
-    payload = request.get_json(silent=True) or {}
-    try:
-        updated = set_mamdani_config(payload)
-    except (TypeError, ValueError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-
-    return jsonify({"ok": True, "config": updated})
-
-
-@app.route("/api/email_config", methods=["GET", "POST"])
-def email_config():
-    if request.method == "GET":
-        current = incident_service.current_email_config()
-        return jsonify({"ok": True, "config": {"enabled": current["enabled"]}})
-
-    payload = request.get_json(silent=True) or {}
-    enabled = bool(payload.get("enabled", False))
-    updated = incident_service.update_email_config(enabled=enabled)
-    update_env_values({"EMAIL_INCIDENTS_ENABLED": "1" if updated["enabled"] else "0"})
-    return jsonify({"ok": True, "config": {"enabled": updated["enabled"]}})
-
-
-@app.route("/video_feed")
-def video_feed():
-    return Response(
-        stream.frames(),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
-    )
-
-
 @app.route("/plate_crop")
 def plate_crop():
     return Response(stream.current_crop(), mimetype="image/jpeg")
 
 
-@app.route("/plate_crop/<int:index>")
-def plate_crop_at(index):
-    return Response(stream.current_crop_at(index), mimetype="image/jpeg")
-
-
 @app.route("/current_frame")
 def current_frame():
     return Response(stream.current_frame(), mimetype="image/jpeg")
-
-
-@app.route("/status")
-def status():
-    return jsonify(stream.current_status())
-
-
-@app.route("/sources")
-def sources():
-    return jsonify(
-        {
-            "ok": True,
-            "sources": available_camera_sources()
-            + [{"type": "video", "value": "video", "label": "Video"}],
-        }
-    )
-
-
-@app.route("/toggle_pause", methods=["POST"])
-def toggle_pause():
-    paused = stream.toggle_pause()
-    return jsonify({"ok": True, "paused": paused})
-
-
-@app.route("/play", methods=["POST"])
-def play():
-    paused = stream.set_paused(False)
-    return jsonify({"ok": True, "paused": paused})
-
-
-@app.route("/pause", methods=["POST"])
-def pause():
-    paused = stream.set_paused(True)
-    return jsonify({"ok": True, "paused": paused})
-
-
-@app.route("/seek", methods=["POST"])
-def seek():
-    payload = request.get_json(silent=True) or {}
-    if "seconds" in payload:
-        position = stream.seek_to(payload["seconds"])
-    else:
-        position = stream.seek_relative(payload.get("delta", 0))
-    return jsonify({"ok": True, "position_seconds": position})
-
-
-@app.route("/upload_video", methods=["POST"])
-def upload_video():
-    file = request.files.get("video")
-    if not file or not file.filename:
-        return jsonify({"ok": False, "error": "No se recibio ningun video."}), 400
-
-    extension = Path(file.filename).suffix.lower()
-    if extension not in Config.ALLOWED_VIDEO_EXTENSIONS:
-        return jsonify({"ok": False, "error": "Formato de video no soportado."}), 400
-
-    filename = secure_filename(file.filename)
-    destination = Config.UPLOAD_DIR / filename
-    counter = 1
-    while destination.exists():
-        destination = Config.UPLOAD_DIR / f"{destination.stem}_{counter}{extension}"
-        counter += 1
-
-    file.save(destination)
-    stream.set_source(str(destination), source_label=destination.name)
-    return jsonify(
-        {
-            "ok": True,
-            "filename": destination.name,
-            "video_url": url_for("static", filename=f"captures/{destination.name}"),
-        }
-    )
-
-
-@app.route("/use_camera", methods=["POST"])
-def use_camera():
-    payload = request.get_json(silent=True) or {}
-    source = payload.get("source", Config.VIDEO_SOURCE)
-
-    try:
-        source = int(source)
-    except (TypeError, ValueError):
-        source = Config.VIDEO_SOURCE
-
-    stream.set_source(source, source_label=f"Camara {source}")
-    return jsonify({"ok": True, "source": source, "label": f"Camara {source}"})
 
 
 if __name__ == "__main__":

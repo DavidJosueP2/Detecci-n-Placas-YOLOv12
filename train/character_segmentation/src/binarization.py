@@ -74,5 +74,5 @@ def run(gray: np.ndarray) -> dict:
             return 1.0 - abs(ratio - 0.18) * 3
         return 0.0
 
-    best = ots
+    best = adp if _score(adp_ratio) >= _score(ots_ratio) else ots
     return {"adaptive": adp, "otsu": ots, "best": best}

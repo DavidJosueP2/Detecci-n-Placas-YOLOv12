@@ -121,6 +121,9 @@ class Config:
     # Set USE_CNN_RECOGNIZER=1 in .env to use the classical CV + CNN pipeline
     # instead of the YOLO-based PlateReader for character recognition.
     USE_CNN_RECOGNIZER = os.getenv("USE_CNN_RECOGNIZER", "0") == "1"
+    # "gray" = current behavior (trained distribution); "clahe" = enhanced crops
+    # Switch to "clahe" only after retraining CharCNN on CLAHE-sourced crops.
+    CNN_CROP_SOURCE = os.getenv("CNN_CROP_SOURCE", "gray")
     VIDEO_SOURCE = parse_video_source(os.getenv("VIDEO_SOURCE", "0"))
     CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.12"))
     CHARACTER_CONFIDENCE_THRESHOLD = float(os.getenv("CHARACTER_CONFIDENCE_THRESHOLD", "0.25"))

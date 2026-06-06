@@ -110,6 +110,7 @@ def segment(
     debug_dir: str | Path | None = None,
     expected_chars: int = EXPECTED_CHARS,
     use_perspective: bool = True,
+    crop_source: str = "gray",
 ) -> dict:
     """
     Segments characters from a cropped plate image.
@@ -226,7 +227,10 @@ def segment(
     )
 
     # ── 7. Crop characters ────────────────────────────────────────────────────
-    char_imgs = [crop_char(gray, b, size=CHAR_SIZE) for b in fixed]
+    # crop_source="clahe" uses CLAHE-enhanced image (more consistent with
+    # what the segmentation "saw"); switch only after retraining on new crops.
+    source_img = prep["clahe"] if crop_source == "clahe" else prep["gray"]
+    char_imgs = [crop_char(source_img, b, size=CHAR_SIZE) for b in fixed]
 
     # Build a preview strip of all chars
     if char_imgs:
