@@ -47,17 +47,30 @@ except Exception as exc:
     detector = None
     detector_error = str(exc)
 
-try:
-    plate_reader = PlateReader(
-        model_path=Config.CHARACTER_MODEL_PATH,
-        confidence_threshold=Config.CHARACTER_CONFIDENCE_THRESHOLD,
-        image_size=Config.CHARACTER_IMAGE_SIZE,
-        device=Config.DEVICE,
-        max_variants=Config.OCR_VARIANTS,
-    )
-except Exception as exc:
-    plate_reader = None
-    reader_error = str(exc)
+if Config.USE_CNN_RECOGNIZER:
+    from src.char_recognizer import CharRecognizer
+    try:
+        plate_reader = CharRecognizer(
+            model_path=str(Config.CNN_MODEL_PATH),
+            device=Config.DEVICE,
+        )
+        print(f"[OCR] CharRecognizer cargado: {Config.CNN_MODEL_PATH}")
+    except Exception as exc:
+        plate_reader = None
+        reader_error = str(exc)
+        print(f"[OCR] CharRecognizer falló, sin OCR: {exc}")
+else:
+    try:
+        plate_reader = PlateReader(
+            model_path=Config.CHARACTER_MODEL_PATH,
+            confidence_threshold=Config.CHARACTER_CONFIDENCE_THRESHOLD,
+            image_size=Config.CHARACTER_IMAGE_SIZE,
+            device=Config.DEVICE,
+            max_variants=Config.OCR_VARIANTS,
+        )
+    except Exception as exc:
+        plate_reader = None
+        reader_error = str(exc)
 
 stream = VideoStream(
     detector=detector,
