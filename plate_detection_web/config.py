@@ -103,9 +103,24 @@ def resolve_character_model_path():
     return candidates[0]
 
 
+def resolve_cnn_model_path():
+    configured = os.getenv("CNN_MODEL_PATH")
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else BASE_DIR / path
+
+    # Default: the best_model.pth produced by train/character_detection/train.py
+    default = PROJECT_ROOT / "train" / "character_detection" / "outputs" / "models" / "best_model.pth"
+    return default
+
+
 class Config:
     MODEL_PATH = resolve_model_path()
     CHARACTER_MODEL_PATH = resolve_character_model_path()
+    CNN_MODEL_PATH = resolve_cnn_model_path()
+    # Set USE_CNN_RECOGNIZER=1 in .env to use the classical CV + CNN pipeline
+    # instead of the YOLO-based PlateReader for character recognition.
+    USE_CNN_RECOGNIZER = os.getenv("USE_CNN_RECOGNIZER", "0") == "1"
     VIDEO_SOURCE = parse_video_source(os.getenv("VIDEO_SOURCE", "0"))
     CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.12"))
     CHARACTER_CONFIDENCE_THRESHOLD = float(os.getenv("CHARACTER_CONFIDENCE_THRESHOLD", "0.25"))
