@@ -81,28 +81,6 @@ def resolve_model_path():
     return candidates[0]
 
 
-def resolve_character_model_path():
-    configured = os.getenv("CHARACTER_MODEL_PATH")
-    if configured:
-        path = Path(configured)
-        return path if path.is_absolute() else BASE_DIR / path
-
-    candidates = [
-        MODELS_DIR / "character_detection" / "Character-LP.pt",
-        MODELS_DIR / "character_detection" / "Charcter-LP.pt",
-    ]
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
-    matches = sorted((BASE_DIR / "models").glob("*Char*LP*.pt"))
-    if matches:
-        return matches[0]
-
-    return candidates[0]
-
-
 def resolve_cnn_model_path():
     configured = os.getenv("CNN_MODEL_PATH")
     if configured:
@@ -116,20 +94,13 @@ def resolve_cnn_model_path():
 
 class Config:
     MODEL_PATH = resolve_model_path()
-    CHARACTER_MODEL_PATH = resolve_character_model_path()
     CNN_MODEL_PATH = resolve_cnn_model_path()
-    # Set USE_CNN_RECOGNIZER=1 in .env to use the classical CV + CNN pipeline
-    # instead of the YOLO-based PlateReader for character recognition.
-    USE_CNN_RECOGNIZER = os.getenv("USE_CNN_RECOGNIZER", "0") == "1"
     # "gray" = current behavior (trained distribution); "clahe" = enhanced crops
     # Switch to "clahe" only after retraining CharCNN on CLAHE-sourced crops.
     CNN_CROP_SOURCE = os.getenv("CNN_CROP_SOURCE", "gray")
     VIDEO_SOURCE = parse_video_source(os.getenv("VIDEO_SOURCE", "0"))
     CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.12"))
-    CHARACTER_CONFIDENCE_THRESHOLD = float(os.getenv("CHARACTER_CONFIDENCE_THRESHOLD", "0.25"))
     IMAGE_SIZE = int(os.getenv("IMAGE_SIZE", "640"))
-    CHARACTER_IMAGE_SIZE = int(os.getenv("CHARACTER_IMAGE_SIZE", "320"))
-    OCR_VARIANTS = int(os.getenv("OCR_VARIANTS", "4"))
     DEVICE = os.getenv("YOLO_DEVICE", "auto")
     TRACKER = os.getenv("YOLO_TRACKER", "botsort.yaml")
     IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))

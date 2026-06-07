@@ -7,9 +7,9 @@ from flask import Flask, Response, redirect, render_template, request, url_for
 from blueprints.api_bp import api_bp
 from blueprints.video_bp import video_bp
 from config import Config
+from src.char_recognizer import CharRecognizer
 from src.detector import PlateDetector
 from src.incident_service import IncidentService
-from src.plate_reader import PlateReader
 from src.video_stream import VideoStream
 
 
@@ -45,31 +45,17 @@ except Exception as exc:
     detector = None
     detector_error = str(exc)
 
-if Config.USE_CNN_RECOGNIZER:
-    from src.char_recognizer import CharRecognizer
-    try:
-        plate_reader = CharRecognizer(
-            model_path=str(Config.CNN_MODEL_PATH),
-            device=Config.DEVICE,
-            crop_source=Config.CNN_CROP_SOURCE,
-        )
-        print(f"[OCR] CharRecognizer cargado: {Config.CNN_MODEL_PATH}")
-    except Exception as exc:
-        plate_reader = None
-        reader_error = str(exc)
-        print(f"[OCR] CharRecognizer falló, sin OCR: {exc}")
-else:
-    try:
-        plate_reader = PlateReader(
-            model_path=Config.CHARACTER_MODEL_PATH,
-            confidence_threshold=Config.CHARACTER_CONFIDENCE_THRESHOLD,
-            image_size=Config.CHARACTER_IMAGE_SIZE,
-            device=Config.DEVICE,
-            max_variants=Config.OCR_VARIANTS,
-        )
-    except Exception as exc:
-        plate_reader = None
-        reader_error = str(exc)
+try:
+    plate_reader = CharRecognizer(
+        model_path=str(Config.CNN_MODEL_PATH),
+        device=Config.DEVICE,
+        crop_source=Config.CNN_CROP_SOURCE,
+    )
+    print(f"[OCR] CharRecognizer cargado: {Config.CNN_MODEL_PATH}")
+except Exception as exc:
+    plate_reader = None
+    reader_error = str(exc)
+    print(f"[OCR] CharRecognizer falló, sin OCR: {exc}")
 
 stream = VideoStream(
     detector=detector,
@@ -232,15 +218,6 @@ def ocr_detalle(index):
     crop = cv2.imdecode(np.frombuffer(crop_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
 
     steps = []
-    if plate_reader is not None and crop is not None:
-        for step in plate_reader.preprocessing_debug(crop):
-            steps.append(
-                {
-                    **step,
-                    "image_url": jpeg_data_url(step["image"]),
-                    "image": None,
-                }
-            )
 
     return render_template(
         "ocr_detalle.html",
@@ -249,8 +226,8 @@ def ocr_detalle(index):
         detection=detection,
         steps=steps,
         reader_error=reader_error,
-        ocr_variants=Config.OCR_VARIANTS,
-        character_image_size=Config.CHARACTER_IMAGE_SIZE,
+        ocr_variants=None,
+        character_image_size=None,
     )
 
 

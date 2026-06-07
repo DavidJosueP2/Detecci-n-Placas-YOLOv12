@@ -1,7 +1,7 @@
 """
 Character recognition pipeline: classical CV segmentation + CNN classifier.
 
-Drop-in replacement for PlateReader with the same read(crop) interface:
+OCR pipeline with the same read(crop) interface used by VideoStream:
     (text, confidence, characters) = recognizer.read(crop_bgr)
 
 Design:
@@ -119,7 +119,7 @@ class CharRecognizer:
     """
     Segmentation + CNN OCR for Ecuadorian license plates.
 
-    Interface matches PlateReader.read() so VideoStream needs no changes:
+    Interface used by VideoStream:
         text, confidence, characters = recognizer.read(crop_bgr_ndarray)
     """
 
