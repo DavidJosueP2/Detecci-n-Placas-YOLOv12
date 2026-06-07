@@ -27,7 +27,7 @@ from torchvision import transforms
 # Run from the character_detection/ directory so src.* imports resolve
 os.chdir(Path(__file__).parent)
 
-from src.model import CLASSES, CharCNN  # noqa: E402
+from src.model import CLASSES, build_model  # noqa: E402
 
 IMG_SIZE = 32
 
@@ -39,16 +39,10 @@ _PREPROCESS = transforms.Compose([
 ])
 
 
-def load_model(checkpoint_path: str, device: torch.device) -> CharCNN:
+def load_model(checkpoint_path: str, device: torch.device) -> torch.nn.Module:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    cfg = ckpt.get("cfg", {})
-    mcfg = cfg.get("model", {"num_classes": 36, "dropout1": 0.5, "dropout2": 0.3})
-
-    model = CharCNN(
-        num_classes=mcfg.get("num_classes", 36),
-        dropout1=mcfg.get("dropout1", 0.5),
-        dropout2=mcfg.get("dropout2", 0.3),
-    )
+    mcfg = ckpt.get("cfg", {}).get("model", {})
+    model = build_model(mcfg)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     return model.to(device)

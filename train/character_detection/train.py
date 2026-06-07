@@ -44,7 +44,7 @@ def main(config_path: str, seed: int) -> None:
 
     # ── Imports after chdir so src.* resolves correctly ──────────────────────
     from src.dataset import build_dataloaders
-    from src.model import CLASSES, CharCNN
+    from src.model import CLASSES, build_model
     from src.trainer import Trainer
     from src.utils import (
         plot_confusion_matrix,
@@ -63,13 +63,11 @@ def main(config_path: str, seed: int) -> None:
 
     # ── Model ─────────────────────────────────────────────────────────────────
     mcfg = cfg["model"]
-    model = CharCNN(
-        num_classes=mcfg["num_classes"],
-        dropout1=mcfg["dropout1"],
-        dropout2=mcfg["dropout2"],
-    )
+    model = build_model(mcfg)
+    arch = mcfg.get("arch", "CharCNN")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model parameters: {n_params:,}\n")
+    print(f"Model  : {arch}")
+    print(f"Params : {n_params:,}\n")
 
     # ── Training ──────────────────────────────────────────────────────────────
     trainer = Trainer(model, cfg)

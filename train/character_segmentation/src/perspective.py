@@ -62,6 +62,15 @@ def _bright_blob_quad(gray: np.ndarray) -> np.ndarray | None:
         return None
 
     rect = cv2.minAreaRect(largest)
+    # Reject quads that don't look like a plate (aspect ratio 1.5–6.0).
+    # When auto_correct detects vehicle bodywork instead of the plate background
+    # (triggered by Otsu inversion on crops with significant dark surroundings),
+    # minAreaRect returns a near-square or oddly-shaped rectangle.  Falling back
+    # to a simple resize is safer than warping the wrong region.
+    rw, rh = rect[1]
+    ar = max(rw, rh) / max(min(rw, rh), 1.0)
+    if not (1.5 <= ar <= 6.0):
+        return None
     box = cv2.boxPoints(rect)   # 4 corners of the oriented bounding rectangle
     return box.astype(np.float32)
 

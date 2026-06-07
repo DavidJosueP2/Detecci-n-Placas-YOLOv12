@@ -30,7 +30,7 @@ _TRAIN_DIR = str(Path(__file__).resolve().parent.parent.parent / "train")
 if _TRAIN_DIR not in sys.path:
     sys.path.insert(0, _TRAIN_DIR)
 
-from character_detection.src.model import CLASSES, CharCNN  # noqa: E402
+from character_detection.src.model import CLASSES, build_model  # noqa: E402
 from character_segmentation.src.segmentation import segment as _segment  # noqa: E402
 
 # Identical preprocessing as inference.py — copied here to avoid that
@@ -47,14 +47,10 @@ _PREPROCESS = transforms.Compose([
 _CANONICAL_W = 440
 
 
-def _load_cnn(checkpoint_path: str, device: torch.device) -> CharCNN:
+def _load_cnn(checkpoint_path: str, device: torch.device) -> torch.nn.Module:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     mcfg = ckpt.get("cfg", {}).get("model", {})
-    model = CharCNN(
-        num_classes=mcfg.get("num_classes", 36),
-        dropout1=mcfg.get("dropout1", 0.5),
-        dropout2=mcfg.get("dropout2", 0.3),
-    )
+    model = build_model(mcfg)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     return model.to(device)
