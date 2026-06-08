@@ -113,7 +113,7 @@ def correct_from_quad(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
     return _warp_to_canonical(img, quad)
 
 
-# Legacy aliases
+# Backward-compatible aliases
 def find_plate_quad(img: np.ndarray) -> np.ndarray | None:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     return _bright_blob_quad(gray)

@@ -76,6 +76,8 @@ class ActivityTracker:
         ghost_risk = float(detection.get("_crop_ghost_risk", 0.0))
         if edge_clipped or cut_risk >= 0.72:
             return
+        if not str(detection.get("plate_text") or "").strip():
+            return
 
         width = max(1.0, float(detection.get("x2", 0.0)) - float(detection.get("x1", 0.0)))
         quality = float(detection.get("_crop_quality", 0.0))
@@ -96,6 +98,10 @@ class ActivityTracker:
             activity["best_frame"] = frame.copy()
             activity["best_crop"] = crop.copy()
             activity["best_detection"] = _evidence_detection(detection)
+            activity["best_plate_text"] = detection.get("plate_text", "")
+            activity["best_plate_original_text"] = detection.get("plate_original_text", "")
+            activity["best_characters"] = detection.get("characters", [])
+            activity["best_plate_confidence"] = float(detection.get("plate_text_confidence", 0.0))
 
     def prune(self, max_age_seconds=4.0):
         now = time.monotonic()
@@ -129,7 +135,7 @@ class ActivityTracker:
             return
         if not hasattr(self._incident_service, "record_activity"):
             return
-        if not str(activity.get("plate_text") or "").strip():
+        if not str(activity.get("best_plate_text") or "").strip():
             return
         if activity.get("best_frame") is None or activity.get("best_crop") is None:
             return
@@ -154,10 +160,10 @@ class ActivityTracker:
                 "started_at": activity.get("started_at", ended_at),
                 "ended_at": ended_at,
                 "duration_seconds": duration,
-                "plate_text": activity.get("plate_text", ""),
-                "plate_original_text": activity.get("plate_original_text", ""),
-                "characters": activity.get("characters", []),
-                "plate_confidence": activity.get("plate_confidence", 0.0),
+                "plate_text": activity.get("best_plate_text", ""),
+                "plate_original_text": activity.get("best_plate_original_text", ""),
+                "characters": activity.get("best_characters", []),
+                "plate_confidence": activity.get("best_plate_confidence", 0.0),
                 "detection_confidence": activity.get("detection_confidence", 0.0),
                 "speed_kmh": activity.get("speed_kmh"),
                 "frame_bytes": frame_bytes,

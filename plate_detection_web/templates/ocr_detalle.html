@@ -17,7 +17,7 @@
           <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Diagnostico OCR</p>
           <h2 class="mt-1 text-xl font-semibold text-slate-950">Preprocesamiento de placa</h2>
         </div>
-        <a class="rounded-[4px] border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:border-radar-600 hover:text-radar-700" href="{{ url_for('index') }}">Volver</a>
+        <a class="rounded-[4px] border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:border-radar-600 hover:text-radar-700" href="{{ back_url or url_for('index') }}">Volver</a>
       </div>
 
       <section class="info-panel mb-5">
@@ -37,12 +37,18 @@
             </p>
           </div>
           <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Variantes usadas</p>
-            <p class="mt-1 font-semibold text-slate-950">{{ ocr_variants }}</p>
+            <p class="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Modelo OCR</p>
+            <p class="mt-1 font-semibold text-slate-950">{{ ocr_variants or "--" }}</p>
           </div>
           <div>
             <p class="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Tamaño OCR</p>
-            <p class="mt-1 font-semibold text-slate-950">{{ character_image_size }} px</p>
+            <p class="mt-1 font-semibold text-slate-950">
+              {% if character_image_size %}
+                {{ character_image_size }} px
+              {% else %}
+                --
+              {% endif %}
+            </p>
           </div>
         </div>
       </section>

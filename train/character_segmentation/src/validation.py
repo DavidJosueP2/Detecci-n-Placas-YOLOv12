@@ -91,8 +91,8 @@ def split_wide(
     expected: int = EXPECTED,
 ) -> list[dict]:
     """
-    If we have fewer boxes than expected, try to split the widest box(es)
-    at the narrowest vertical projection point within each box.
+    If we have fewer boxes than expected, split the widest box(es)
+    geometrically. The candidate stage is connected-components only.
     """
     bboxes = sort_by_x(bboxes)
     deficit = expected - len(bboxes)
@@ -116,7 +116,7 @@ def split_wide(
             continue
 
         n_splits = min(2, deficit - splits_done + 1)  # split into at most 3 pieces
-        pieces = _split_box_by_projection(binary, b, n_splits)
+        pieces = _equal_split(b, n_splits + 1)
         if len(pieces) > 1:
             result[idx : idx + 1] = pieces
             splits_done += len(pieces) - 1
@@ -126,80 +126,14 @@ def split_wide(
     return sort_by_x(result)
 
 
-def _split_box_by_projection(
-    binary: np.ndarray,
-    bbox: dict,
-    n_splits: int,
-) -> list[dict]:
-    """
-    Splits a bbox into n_splits+1 pieces by finding n_splits deepest valleys
-    in the vertical projection of the region.
-    Falls back to equal-width split if no clear valleys are found.
-    """
-    x, y, w, h = bbox["x"], bbox["y"], bbox["w"], bbox["h"]
-    region = binary[y : y + h, x : x + w]
-    proj = np.sum(region > 0, axis=0).astype(np.float32)
-
-    if proj.max() == 0:
-        return _equal_split(bbox, n_splits + 1)
-
-    # Smooth projection and find the n_splits local minima
-    from scipy.signal import argrelmin
-    smooth = np.convolve(proj, np.ones(3) / 3, mode="same")
-
-    # Find local minima (valleys)
-    try:
-        minima = argrelmin(smooth, order=3)[0]
-    except Exception:
-        minima = np.array([], dtype=int)
-
-    if len(minima) == 0:
-        return _equal_split(bbox, n_splits + 1)
-
-    # Pick the n_splits deepest valleys
-    valley_vals = smooth[minima]
-    best_valleys = minima[np.argsort(valley_vals)[:n_splits]]
-    best_valleys = np.sort(best_valleys)
-
-    # Build split points in the original image coordinate space
-    split_xs = [x + int(v) for v in best_valleys]
-    return _build_pieces(binary, bbox, split_xs)
-
-
 def _equal_split(bbox: dict, n: int) -> list[dict]:
-    """Fallback: divide bbox into n equal-width pieces."""
+    """Divide bbox into n equal-width pieces."""
     piece_w = max(1, bbox["w"] // n)
     pieces = []
     for i in range(n):
         px = bbox["x"] + i * piece_w
         pw = piece_w if i < n - 1 else bbox["x"] + bbox["w"] - px
         pieces.append({"x": px, "y": bbox["y"], "w": pw, "h": bbox["h"]})
-    return pieces
-
-
-def _build_pieces(
-    binary: np.ndarray,
-    bbox: dict,
-    split_xs: list[int],
-) -> list[dict]:
-    """Build bboxes from split points (absolute x coordinates)."""
-    x, y, w, h = bbox["x"], bbox["y"], bbox["w"], bbox["h"]
-    boundaries = [x] + split_xs + [x + w]
-    pieces = []
-    for i in range(len(boundaries) - 1):
-        px1, px2 = boundaries[i], boundaries[i + 1]
-        pw = px2 - px1
-        if pw < 2:
-            continue
-        # Recompute tight vertical bounds within this strip
-        strip = binary[y : y + h, px1:px2]
-        rows = np.any(strip > 0, axis=1)
-        if rows.any():
-            py1 = y + int(np.argmax(rows))
-            py2 = y + h - 1 - int(np.argmax(rows[::-1]))
-            pieces.append({"x": px1, "y": py1, "w": pw, "h": py2 - py1 + 1})
-        else:
-            pieces.append({"x": px1, "y": y, "w": pw, "h": h})
     return pieces
 
 

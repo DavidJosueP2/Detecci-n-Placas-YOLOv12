@@ -1,5 +1,5 @@
 """
-Debug visualization: annotated images, projection plot, mosaic grid.
+Debug visualization: annotated images and mosaic grid.
 """
 
 import math
@@ -29,21 +29,6 @@ def draw_bboxes(
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA,
             )
     return out
-
-
-def projection_image(
-    proj: np.ndarray,
-    height: int = 80,
-    color: tuple = (0, 200, 255),
-) -> np.ndarray:
-    """Renders a vertical projection histogram as a grayscale image."""
-    w = len(proj)
-    canvas = np.zeros((height, w, 3), dtype=np.uint8)
-    max_v = proj.max() if proj.max() > 0 else 1
-    for x, v in enumerate(proj):
-        bar_h = int((v / max_v) * (height - 2))
-        cv2.line(canvas, (x, height - 1), (x, height - 1 - bar_h), color, 1)
-    return canvas
 
 
 # ── Per-character strips ──────────────────────────────────────────────────────

@@ -1050,17 +1050,27 @@ class VideoStream:
         for item in crops:
             detection = item["detection"]
             evidence_frame, evidence_crop, evidence_detection = self.activity_tracker.get_evidence(detection.get("track_id"))
-            crop_for_evidence = evidence_crop if evidence_crop is not None else item["crop"]
+            use_evidence = (
+                evidence_crop is not None
+                and evidence_detection is not None
+                and str(evidence_detection.get("plate_text") or "").strip()
+            )
+            incident_detection = dict(evidence_detection) if use_evidence else detection
+            if use_evidence:
+                for key in ("speed_kmh", "speed_status"):
+                    if detection.get(key) is not None:
+                        incident_detection[key] = detection.get(key)
+            crop_for_evidence = evidence_crop if use_evidence else item["crop"]
             crop_bytes = encode_jpeg(crop_for_evidence)
             if crop_bytes is None:
                 continue
 
             incident_frame_bytes = self._incident_frame_bytes(
-                evidence_detection or detection,
+                incident_detection,
                 frame_bytes,
-                evidence_frame=evidence_frame,
+                evidence_frame=evidence_frame if use_evidence else None,
             )
-            fuzzy_result = self._evaluate_incident(detection, incident_frame_bytes, crop_bytes)
+            fuzzy_result = self._evaluate_incident(incident_detection, incident_frame_bytes, crop_bytes)
             if fuzzy_result is not None:
                 detection["fuzzy_result"] = fuzzy_result
 

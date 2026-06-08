@@ -5,13 +5,10 @@ Pipeline:
   1. Preprocess  (resize, grayscale, CLAHE, denoise)
   2. Perspective correction (optional, skips gracefully if no quad found)
   3. Binarize    (adaptive → Otsu fallback, morphological cleanup)
-  4. Method A    — Vertical Projection
-     └─ validate → if 5-9 chars, accept
-  5. Method B    — Connected Components  (fallback)
-     └─ validate → if 5-9 chars, accept
-  6. Fix         — merge / split to reach 7 chars
-  7. Crop chars  — extract 32×32 grayscale images for the CNN
-  8. Debug output (optional)
+  4. Connected Components — find candidate character boxes
+  5. Fix                  — merge / split to reach 7 chars
+  6. Crop chars           — extract 32×32 grayscale images for the CNN
+  7. Debug output (optional)
 
 Public API:
     result = segment(img_or_path, debug_dir=None)
@@ -29,28 +26,92 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import binarization, connected_components, preprocessing, projection, validation
+from . import band_cleanup, binarization, connected_components, preprocessing, validation
 from .visualization import (
     draw_bboxes,
     make_mosaic,
-    projection_image,
     save_chars,
     save_debug,
 )
 
 CHAR_SIZE = 32          # output size for CNN
 EXPECTED_CHARS = 7      # ABC-1234
-VALID_MIN = 4           # below this → definitely failed
-VALID_MAX = 10          # above this → too noisy
 
 
 # ── Character crop ────────────────────────────────────────────────────────────
+
+def clean_binary_char_crop(crop: np.ndarray) -> np.ndarray:
+    """
+    Removes small lateral foreground fragments inside an individual character
+    crop. This is intentionally per-character, not plate-wide, so strict cleanup
+    does not erase weak letters from the full segmentation stage.
+    """
+    if crop is None or crop.size == 0:
+        return crop
+
+    binary = np.where(crop > 0, 255, 0).astype(np.uint8)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+    if num_labels <= 2:
+        return binary
+
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    max_area = int(areas.max()) if len(areas) else 0
+    if max_area <= 0:
+        return binary
+
+    h, w = binary.shape[:2]
+    center_x = w / 2.0
+    min_area = max(3, int(max_area * 0.10))
+
+    candidates = []
+    for label in range(1, num_labels):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < min_area:
+            continue
+        cx = float(centroids[label][0])
+        center_penalty = min(abs(cx - center_x) / max(center_x, 1.0), 1.0)
+        score = area * (1.0 - center_penalty * 0.75)
+        candidates.append((score, label, area, cx))
+
+    if not candidates:
+        return binary
+
+    candidates.sort(reverse=True)
+    best_score, best_label, _best_area, _best_cx = candidates[0]
+
+    keep = np.zeros_like(binary)
+    kept_any = False
+    for score, label, area, cx in candidates:
+        near_center = abs(cx - center_x) <= w * 0.25
+        strong_candidate = score >= best_score * 0.55
+
+        if label == best_label or (near_center and strong_candidate):
+            keep[labels == label] = 255
+            kept_any = True
+
+    if not kept_any:
+        return binary
+
+    ys, xs = np.where(keep > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return binary
+
+    margin = 1
+    x1 = max(0, int(xs.min()) - margin)
+    x2 = min(w, int(xs.max()) + margin + 1)
+    y1 = max(0, int(ys.min()) - margin)
+    y2 = min(h, int(ys.max()) + margin + 1)
+    return keep[y1:y2, x1:x2]
+
 
 def crop_char(
     gray: np.ndarray,
     bbox: dict,
     size: int = CHAR_SIZE,
     pad_ratio: float = 0.10,
+    pad_value: int = 255,
 ) -> np.ndarray:
     """
     Crops a character from the grayscale image, adds padding, and resizes to
@@ -71,11 +132,14 @@ def crop_char(
     if crop.size == 0:
         return np.full((size, size), 128, dtype=np.uint8)
 
+    if pad_value == 0:
+        crop = clean_binary_char_crop(crop)
+
     # Pad to square before resizing to avoid distortion
     ch, cw = crop.shape
     if ch != cw:
         side = max(ch, cw)
-        canvas = np.full((side, side), 255, dtype=np.uint8)
+        canvas = np.full((side, side), pad_value, dtype=np.uint8)
         dy = (side - ch) // 2
         dx = (side - cw) // 2
         canvas[dy : dy + ch, dx : dx + cw] = crop
@@ -85,19 +149,6 @@ def crop_char(
 
 
 # ── Core segmentation logic ───────────────────────────────────────────────────
-
-def _try_method(
-    binary: np.ndarray,
-    method: str,
-) -> tuple[list[dict], str]:
-    if method == "projection":
-        return projection.segment(binary), "projection"
-    return connected_components.segment(binary), "connected_components"
-
-
-def _is_acceptable(bboxes: list[dict]) -> bool:
-    return VALID_MIN <= len(bboxes) <= VALID_MAX
-
 
 def _pick_best_binary(binarized: dict) -> np.ndarray:
     return binarized["best"]
@@ -163,48 +214,26 @@ def segment(
     # ── 3. Binarize ───────────────────────────────────────────────────────────
     binarized = binarization.run(denoised)
     binary = _pick_best_binary(binarized)
-    stages["5_binary_adaptive"] = binarized["adaptive"]
-    stages["6_binary_otsu"] = binarized["otsu"]
-    stages["7_binary_best"] = binary
+    selected_binarization = binarized.get("method", "otsu")
+    stages["5_binary_selected"] = binary
 
     # ── 3b. Isolate main character band ──────────────────────────────────────
     # Zeros out rows that belong to ECUADOR text, plate border, screws, and
-    # any noise above/below the principal character row. Both projection and
-    # CC receive a clean single-band binary instead of the full noisy plate.
-    from . import projection as _proj_mod
-    binary = _proj_mod.isolate_text_band(binary)
+    # any noise above/below the principal character row. Connected components
+    # receives a clean single-band binary instead of the full noisy plate.
+    binary = band_cleanup.isolate_text_band(binary)
     stages["7b_band_isolated"] = binary
-    binary = _proj_mod.remove_small_blobs(binary)
+    binary = band_cleanup.remove_small_blobs(binary)
     stages["7c_cleaned"] = binary
 
-    # ── 4. Projection segmentation ────────────────────────────────────────────
-    proj_bboxes, _ = _try_method(binary, "projection")
-
-    proj_arr = _proj_mod.smooth(_proj_mod.compute(binary))
-    stages["8_projection"] = projection_image(proj_arr, height=60)
-    stages["8b_projection_bboxes"] = draw_bboxes(
-        prep["resized"], proj_bboxes, color=(0, 220, 0)
+    # ── 4. Connected Components segmentation ─────────────────────────────────
+    bboxes = connected_components.segment(binary)
+    method_used = "connected_components"
+    stages["8_cc_bboxes"] = draw_bboxes(
+        prep["resized"], bboxes, color=(0, 140, 255)
     )
 
-    method_used = "projection"
-    bboxes = proj_bboxes
-
-    # ── 5. Fallback: Connected Components ─────────────────────────────────────
-    if not _is_acceptable(bboxes):
-        cc_bboxes, _ = _try_method(binary, "connected_components")
-        stages["9_cc_bboxes"] = draw_bboxes(
-            prep["resized"], cc_bboxes, color=(0, 140, 255)
-        )
-
-        # Pick the method that gives a count closer to expected
-        proj_dist = abs(len(proj_bboxes) - expected_chars)
-        cc_dist = abs(len(cc_bboxes) - expected_chars)
-
-        if cc_dist < proj_dist or not _is_acceptable(bboxes):
-            bboxes = cc_bboxes
-            method_used = "connected_components"
-
-    # ── 6. Validate & fix ─────────────────────────────────────────────────────
+    # ── 5. Validate & fix ─────────────────────────────────────────────────────
     fixed, confidence, note = validation.validate_and_fix(bboxes, binary, expected_chars)
 
     # Clip all bbox coordinates to valid image bounds.
@@ -227,10 +256,18 @@ def segment(
     )
 
     # ── 7. Crop characters ────────────────────────────────────────────────────
-    # crop_source="clahe" uses CLAHE-enhanced image (more consistent with
-    # what the segmentation "saw"); switch only after retraining on new crops.
-    source_img = prep["clahe"] if crop_source == "clahe" else prep["gray"]
-    char_imgs = [crop_char(source_img, b, size=CHAR_SIZE) for b in fixed]
+    # crop_source="binary" returns white characters over black background,
+    # matching the CNN_MODEL_PATH project classifier training contract.
+    if crop_source == "binary":
+        source_img = binary
+        pad_value = 0
+    elif crop_source == "clahe":
+        source_img = prep["clahe"]
+        pad_value = 255
+    else:
+        source_img = prep["gray"]
+        pad_value = 255
+    char_imgs = [crop_char(source_img, b, size=CHAR_SIZE, pad_value=pad_value) for b in fixed]
 
     # Build a preview strip of all chars
     if char_imgs:
@@ -258,5 +295,6 @@ def segment(
         "n_chars": len(chars_out),
         "note": note,
         "perspective_corrected": was_corrected,
+        "binarization_method": selected_binarization,
         "_stages": stages,    # available for custom visualizations
     }

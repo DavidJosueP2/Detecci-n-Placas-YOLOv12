@@ -6,6 +6,26 @@ Auto-detects polarity (dark chars on light bg vs light chars on dark bg).
 import cv2
 import numpy as np
 
+VALID_METHODS = {"otsu", "adaptive"}
+_current_method = "otsu"
+
+
+def normalize_method(method: str | None) -> str:
+    value = str(method or "otsu").strip().lower()
+    if value not in VALID_METHODS:
+        raise ValueError(f"Metodo de binarizacion no valido: {method}")
+    return value
+
+
+def get_method() -> str:
+    return _current_method
+
+
+def set_method(method: str) -> str:
+    global _current_method
+    _current_method = normalize_method(method)
+    return _current_method
+
 
 def _chars_are_dark(gray: np.ndarray) -> bool:
     """True when characters are darker than background (standard plate case)."""
@@ -53,26 +73,15 @@ def cleanup(binary: np.ndarray, open_k: int = 2, close_k: int = 3) -> np.ndarray
     return binary
 
 
-def run(gray: np.ndarray) -> dict:
+def run(gray: np.ndarray, method: str | None = None) -> dict:
     """
-    Tries adaptive threshold first; falls back to Otsu if the result is poor
-    (fewer than 1% or more than 40% foreground pixels).
-    Returns dict with 'adaptive', 'otsu', and 'best' keys.
+    Computes only the configured production thresholding method.
+    Returns dict with 'method' and 'best' keys.
     """
-    adp = cleanup(adaptive(gray))
-    ots = cleanup(otsu(gray))
+    selected = normalize_method(method or _current_method)
+    if selected == "adaptive":
+        best = cleanup(adaptive(gray))
+    else:
+        best = cleanup(otsu(gray))
 
-    def _foreground_ratio(b):
-        return (b > 0).mean()
-
-    adp_ratio = _foreground_ratio(adp)
-    ots_ratio = _foreground_ratio(ots)
-
-    def _score(ratio):
-        # Ideal: 10-30% foreground (characters fill roughly that fraction of a plate)
-        if 0.05 <= ratio <= 0.40:
-            return 1.0 - abs(ratio - 0.18) * 3
-        return 0.0
-
-    best = adp if _score(adp_ratio) >= _score(ots_ratio) else ots
-    return {"adaptive": adp, "otsu": ots, "best": best}
+    return {"method": selected, "best": best}

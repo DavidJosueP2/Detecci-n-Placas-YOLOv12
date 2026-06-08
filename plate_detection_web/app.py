@@ -1,4 +1,6 @@
 import base64
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import cv2
 import numpy as np
@@ -117,6 +119,301 @@ def jpeg_data_url(image, quality=82):
     return f"data:image/jpeg;base64,{encoded}"
 
 
+def image_data_url(image, ext=".png", quality=82):
+    if image is None or getattr(image, "size", 0) == 0:
+        return ""
+
+    params = []
+    mime = "image/png"
+    if ext.lower() in {".jpg", ".jpeg"}:
+        params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+        mime = "image/jpeg"
+
+    success, buffer = cv2.imencode(ext, image, params)
+    if not success:
+        return ""
+    encoded = base64.b64encode(buffer.tobytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def image_shape_label(image):
+    if image is None or getattr(image, "size", 0) == 0:
+        return "--"
+    h, w = image.shape[:2]
+    return f"{w} x {h} px"
+
+
+def make_ocr_step(title, description, image, used=True):
+    return {
+        "title": title,
+        "description": description,
+        "image_url": image_data_url(image),
+        "shape": image_shape_label(image),
+        "used": used,
+    }
+
+
+def load_debug_stage(debug_dir, stage):
+    image_path = debug_dir / f"{stage}.png"
+    if not image_path.exists():
+        return None
+    return cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+
+
+def make_character_strip(char_images):
+    if not char_images:
+        return None
+
+    cells = []
+    for image in char_images:
+        if image is None or getattr(image, "size", 0) == 0:
+            continue
+        if image.dtype in {np.float32, np.float64}:
+            normalized = image
+            if float(np.max(normalized)) <= 1.0:
+                normalized = normalized * 255.0
+            gray = np.clip(normalized, 0, 255).astype(np.uint8)
+        else:
+            gray = image.astype(np.uint8)
+        if len(gray.shape) == 3:
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        cells.append(cv2.resize(gray, (72, 72), interpolation=cv2.INTER_NEAREST))
+
+    if not cells:
+        return None
+
+    gap = 10
+    label_h = 22
+    width = len(cells) * 72 + (len(cells) + 1) * gap
+    height = 72 + label_h + gap * 2
+    canvas = np.full((height, width, 3), 255, dtype=np.uint8)
+
+    for index, cell in enumerate(cells):
+        x = gap + index * (72 + gap)
+        y = gap
+        bgr = cv2.cvtColor(cell, cv2.COLOR_GRAY2BGR)
+        canvas[y:y + 72, x:x + 72] = bgr
+        cv2.rectangle(canvas, (x, y), (x + 72, y + 72), (210, 220, 235), 1)
+        cv2.putText(
+            canvas,
+            f"C{index + 1}",
+            (x + 22, y + 92),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (15, 23, 42),
+            1,
+            cv2.LINE_AA,
+        )
+
+    return canvas
+
+
+def draw_classification_overlay(base_image, bboxes, characters):
+    if base_image is None or getattr(base_image, "size", 0) == 0:
+        return None
+    if not bboxes or not characters:
+        return None
+
+    if len(base_image.shape) == 2:
+        canvas = cv2.cvtColor(base_image, cv2.COLOR_GRAY2BGR)
+    else:
+        canvas = base_image.copy()
+
+    img_h, img_w = canvas.shape[:2]
+    for index, (bbox, char) in enumerate(zip(bboxes, characters)):
+        x1 = max(0, min(img_w - 1, int(bbox.get("x", 0))))
+        y1 = max(0, min(img_h - 1, int(bbox.get("y", 0))))
+        x2 = max(0, min(img_w - 1, x1 + int(bbox.get("w", 0))))
+        y2 = max(0, min(img_h - 1, y1 + int(bbox.get("h", 0))))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        conf = float(char.get("confidence", 0.0) or 0.0)
+        color = (0, int(255 * max(0.0, min(1.0, conf))), int(255 * (1.0 - max(0.0, min(1.0, conf)))))
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+
+        label = f"{index}:{char.get('value', '')} {conf:.0%}"
+        fs = 0.45
+        th = 1
+        (tw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+        tx = max(0, x1)
+        ty = max(lh + 3, y1 - 3)
+        cv2.rectangle(canvas, (tx, ty - lh - 2), (tx + tw + 4, ty + 2), color, -1)
+        cv2.putText(
+            canvas,
+            label,
+            (tx + 2, ty),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            fs,
+            (0, 0, 0),
+            th,
+            cv2.LINE_AA,
+        )
+
+    return canvas
+
+
+OCR_STAGE_INFO = {
+    "0_perspective_correction": (
+        "Correccion de perspectiva",
+        "Intenta enderezar la placa antes de segmentar caracteres.",
+        True,
+    ),
+    "1_original": (
+        "Recorte normalizado",
+        "Placa redimensionada al ancho canonico usado por segmentacion.",
+        True,
+    ),
+    "2_grayscale": (
+        "Escala de grises",
+        "Convierte el recorte a un solo canal para preparar binarizacion.",
+        True,
+    ),
+    "3_clahe": (
+        "Contraste local",
+        "Mejora contraste por zonas para placas con iluminacion irregular.",
+        False,
+    ),
+    "4_denoised": (
+        "Suavizado",
+        "Reduce ruido manteniendo bordes antes de separar caracteres.",
+        True,
+    ),
+    "5_binary_selected": (
+        "Binarizacion",
+        "Mascara generada con el metodo configurado para buscar regiones de caracteres.",
+        True,
+    ),
+    "7b_band_isolated": (
+        "Banda de caracteres",
+        "Conserva la franja principal de letras y numeros.",
+        True,
+    ),
+    "7c_cleaned": (
+        "Limpieza de ruido",
+        "Elimina componentes pequenos antes de buscar candidatos.",
+        True,
+    ),
+    "8_cc_bboxes": (
+        "Candidatos por componentes",
+        "Cajas iniciales encontradas por componentes conectados.",
+        True,
+    ),
+    "10_final_bboxes": (
+        "Bounding boxes de segmentacion",
+        "Cajas validadas sobre la imagen normalizada del segmentador.",
+        True,
+    ),
+    "11_chars_strip": (
+        "Caracteres recortados",
+        "Cada recorte individual que se envia a la CNN en orden izquierda a derecha.",
+        True,
+    ),
+}
+
+
+def detection_confidence_from_characters(characters):
+    if not characters:
+        return None
+    confidences = [
+        float(char.get("confidence", 0.0))
+        for char in characters
+        if char.get("confidence") is not None
+    ]
+    if not confidences:
+        return None
+    return sum(confidences) / len(confidences)
+
+
+def load_static_image(relative_path):
+    if not relative_path:
+        return None
+    path = Path(relative_path)
+    if not path.is_absolute():
+        path = Config.STATIC_DIR / path
+    if not path.exists():
+        return None
+    return cv2.imread(str(path), cv2.IMREAD_COLOR)
+
+
+def build_ocr_debug(crop, stored_characters=None):
+    steps = []
+    debug = None
+
+    if crop is None or getattr(crop, "size", 0) == 0:
+        return steps, debug
+
+    steps.append(make_ocr_step(
+        "Recorte recibido",
+        "Recorte de placa usado para regenerar el diagnostico OCR.",
+        crop,
+        True,
+    ))
+
+    if plate_reader is None or not hasattr(plate_reader, "read_debug"):
+        return steps, debug
+
+    with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+        debug_dir = Path(temp_dir) / "segmentacion"
+        debug = plate_reader.read_debug(crop, debug_dir=debug_dir)
+
+        for stage, (title, description, used) in OCR_STAGE_INFO.items():
+            if stage == "11_chars_strip":
+                image = make_character_strip(debug.get("char_images", []) if debug else [])
+                if image is None:
+                    image = load_debug_stage(debug_dir, stage)
+            else:
+                image = load_debug_stage(debug_dir, stage)
+            if image is None:
+                continue
+            if stage == "5_binary_selected":
+                method = (debug or {}).get("binarization_method", "otsu")
+                method_label = "adaptativa" if method == "adaptive" else "Otsu"
+                title = f"Binarizacion {method_label}"
+            steps.append(make_ocr_step(title, description, image, used))
+
+        if stored_characters is not None:
+            bbox_image = draw_classification_overlay(
+                (debug.get("stages") or {}).get("1_original"),
+                debug.get("bboxes", []),
+                stored_characters,
+            )
+        else:
+            bbox_image = debug.get("bbox_image") if debug else None
+        if bbox_image is not None and getattr(bbox_image, "size", 0) > 0:
+            steps.append(make_ocr_step(
+                "Clasificacion de caracteres",
+                "Cajas finales con letra o numero reconocido y confianza individual.",
+                bbox_image,
+                True,
+            ))
+
+    return steps, debug
+
+
+def render_ocr_detail(crop, detection, active_page, back_url, use_stored_ocr=False):
+    stored_characters = (detection or {}).get("characters") if use_stored_ocr else None
+    steps, debug = build_ocr_debug(crop, stored_characters=stored_characters)
+    debug_text = debug.get("text") if debug else ""
+    debug_conf = debug.get("confidence") if debug else None
+
+    display_detection = dict(detection or {})
+    if debug is not None and not use_stored_ocr:
+        display_detection["plate_text"] = debug_text
+        display_detection["plate_text_confidence"] = debug_conf
+
+    return render_template(
+        "ocr_detalle.html",
+        active_page=active_page,
+        detection=display_detection,
+        steps=steps,
+        reader_error=reader_error,
+        ocr_variants="CNN .pth",
+        character_image_size=28,
+        back_url=back_url,
+    )
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -215,19 +512,59 @@ def ocr_detalle(index):
     detections = status.get("detections", [])
     detection = detections[index] if 0 <= index < len(detections) else None
     crop_bytes = stream.current_crop_at(index)
-    crop = cv2.imdecode(np.frombuffer(crop_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    crop = None
+    if crop_bytes:
+        crop = cv2.imdecode(np.frombuffer(crop_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-    steps = []
-
-    return render_template(
-        "ocr_detalle.html",
-        active_page="foto_radar",
-        index=index,
+    return render_ocr_detail(
+        crop=crop,
         detection=detection,
-        steps=steps,
-        reader_error=reader_error,
-        ocr_variants=None,
-        character_image_size=None,
+        active_page="foto_radar",
+        back_url=url_for("index"),
+    )
+
+
+@app.route("/incidencias/<incident_id>/ocr_detalle")
+def incidencia_ocr_detalle(incident_id):
+    incident = incident_service.get_incident(incident_id)
+    if incident is None:
+        return render_template("incidencia_no_encontrada.html", active_page="incidencias"), 404
+
+    crop = load_static_image(incident.get("crop_path"))
+    detection = {
+        "plate_text": incident.get("plate_text"),
+        "plate_text_confidence": detection_confidence_from_characters(
+            incident.get("characters") or []
+        ),
+        "characters": incident.get("characters") or [],
+    }
+    return render_ocr_detail(
+        crop=crop,
+        detection=detection,
+        active_page="incidencias",
+        back_url=url_for("incidencia_detalle", incident_id=incident_id),
+        use_stored_ocr=True,
+    )
+
+
+@app.route("/actividad/<activity_id>/ocr_detalle")
+def actividad_ocr_detalle(activity_id):
+    item = incident_service.get_activity(activity_id)
+    if item is None:
+        return render_template("actividad_no_encontrada.html", active_page="actividad"), 404
+
+    crop = load_static_image(item.get("crop_path"))
+    detection = {
+        "plate_text": item.get("plate_text"),
+        "plate_text_confidence": item.get("plate_confidence"),
+        "characters": item.get("characters") or [],
+    }
+    return render_ocr_detail(
+        crop=crop,
+        detection=detection,
+        active_page="actividad",
+        back_url=url_for("actividad_detalle", activity_id=activity_id),
+        use_stored_ocr=True,
     )
 
 

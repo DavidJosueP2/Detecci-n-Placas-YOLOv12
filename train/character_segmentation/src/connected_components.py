@@ -1,5 +1,5 @@
 """
-Connected-components segmentation — fallback when projection fails.
+Connected-components segmentation.
 
 Two-pass adaptive filter: calibrates thresholds from the actual components
 found in the image instead of using fixed image-height ratios. This handles

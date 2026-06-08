@@ -1,6 +1,7 @@
 from flask import Blueprint, current_app, jsonify, request
 
 from config import Config
+from src.char_recognizer import current_binarization_config, update_binarization_config
 from src.fuzzy_mamdani import get_mamdani_config, set_mamdani_config
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -96,6 +97,19 @@ def ocr_zone_config():
             return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
 
     updated = current_app.stream.update_ocr_zone_config(**accepted)
+    return jsonify({"ok": True, "config": updated})
+
+
+@api_bp.route("/ocr_binarization_config", methods=["GET", "POST"])
+def ocr_binarization_config():
+    if request.method == "GET":
+        return jsonify({"ok": True, "config": current_binarization_config()})
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        updated = update_binarization_config(payload.get("method", "otsu"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "config": updated})
 
 

@@ -52,6 +52,7 @@
             <h3 class="mt-1 text-2xl font-semibold text-slate-950">{{ item.plate_text or "Sin lectura" }}</h3>
           </div>
           <img class="h-32 w-full object-contain" src="{{ url_for('static', filename=item.crop_path) }}" alt="Recorte de placa">
+          <a class="w-fit text-sm font-semibold text-radar-700 underline underline-offset-4 hover:text-radar-600" href="{{ url_for('actividad_ocr_detalle', activity_id=item.id) }}">Detalle OCR</a>
           <dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
             <dt class="text-slate-500">Velocidad</dt><dd class="font-semibold">{% if item.speed_kmh is not none %}{{ "%.1f"|format(item.speed_kmh) }} km/h{% else %}--{% endif %}</dd>
             <dt class="text-slate-500">Confianza OCR</dt><dd class="font-semibold">{{ "%.1f"|format(item.plate_confidence * 100) }}%</dd>
