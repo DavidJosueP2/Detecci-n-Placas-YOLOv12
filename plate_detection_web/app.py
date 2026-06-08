@@ -208,51 +208,6 @@ def make_character_strip(char_images):
     return canvas
 
 
-def draw_classification_overlay(base_image, bboxes, characters):
-    if base_image is None or getattr(base_image, "size", 0) == 0:
-        return None
-    if not bboxes or not characters:
-        return None
-
-    if len(base_image.shape) == 2:
-        canvas = cv2.cvtColor(base_image, cv2.COLOR_GRAY2BGR)
-    else:
-        canvas = base_image.copy()
-
-    img_h, img_w = canvas.shape[:2]
-    for index, (bbox, char) in enumerate(zip(bboxes, characters)):
-        x1 = max(0, min(img_w - 1, int(bbox.get("x", 0))))
-        y1 = max(0, min(img_h - 1, int(bbox.get("y", 0))))
-        x2 = max(0, min(img_w - 1, x1 + int(bbox.get("w", 0))))
-        y2 = max(0, min(img_h - 1, y1 + int(bbox.get("h", 0))))
-        if x2 <= x1 or y2 <= y1:
-            continue
-
-        conf = float(char.get("confidence", 0.0) or 0.0)
-        color = (0, int(255 * max(0.0, min(1.0, conf))), int(255 * (1.0 - max(0.0, min(1.0, conf)))))
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-
-        label = f"{index}:{char.get('value', '')} {conf:.0%}"
-        fs = 0.45
-        th = 1
-        (tw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
-        tx = max(0, x1)
-        ty = max(lh + 3, y1 - 3)
-        cv2.rectangle(canvas, (tx, ty - lh - 2), (tx + tw + 4, ty + 2), color, -1)
-        cv2.putText(
-            canvas,
-            label,
-            (tx + 2, ty),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            fs,
-            (0, 0, 0),
-            th,
-            cv2.LINE_AA,
-        )
-
-    return canvas
-
-
 OCR_STAGE_INFO = {
     "0_perspective_correction": (
         "Correccion de perspectiva",
@@ -291,7 +246,7 @@ OCR_STAGE_INFO = {
     ),
     "7c_cleaned": (
         "Limpieza de ruido",
-        "Elimina componentes pequenos antes de buscar candidatos.",
+        "Mascara final antes de buscar candidatos por componentes.",
         True,
     ),
     "8_cc_bboxes": (
@@ -336,7 +291,7 @@ def load_static_image(relative_path):
     return cv2.imread(str(path), cv2.IMREAD_COLOR)
 
 
-def build_ocr_debug(crop, stored_characters=None):
+def build_ocr_debug(crop):
     steps = []
     debug = None
 
@@ -372,14 +327,7 @@ def build_ocr_debug(crop, stored_characters=None):
                 title = f"Binarizacion {method_label}"
             steps.append(make_ocr_step(title, description, image, used))
 
-        if stored_characters is not None:
-            bbox_image = draw_classification_overlay(
-                (debug.get("stages") or {}).get("1_original"),
-                debug.get("bboxes", []),
-                stored_characters,
-            )
-        else:
-            bbox_image = debug.get("bbox_image") if debug else None
+        bbox_image = debug.get("bbox_image") if debug else None
         if bbox_image is not None and getattr(bbox_image, "size", 0) > 0:
             steps.append(make_ocr_step(
                 "Clasificacion de caracteres",
@@ -391,16 +339,16 @@ def build_ocr_debug(crop, stored_characters=None):
     return steps, debug
 
 
-def render_ocr_detail(crop, detection, active_page, back_url, use_stored_ocr=False):
-    stored_characters = (detection or {}).get("characters") if use_stored_ocr else None
-    steps, debug = build_ocr_debug(crop, stored_characters=stored_characters)
+def render_ocr_detail(crop, detection, active_page, back_url):
+    steps, debug = build_ocr_debug(crop)
     debug_text = debug.get("text") if debug else ""
     debug_conf = debug.get("confidence") if debug else None
 
     display_detection = dict(detection or {})
-    if debug is not None and not use_stored_ocr:
+    if debug is not None:
         display_detection["plate_text"] = debug_text
         display_detection["plate_text_confidence"] = debug_conf
+        display_detection["characters"] = debug.get("characters") or []
 
     return render_template(
         "ocr_detalle.html",
@@ -543,7 +491,6 @@ def incidencia_ocr_detalle(incident_id):
         detection=detection,
         active_page="incidencias",
         back_url=url_for("incidencia_detalle", incident_id=incident_id),
-        use_stored_ocr=True,
     )
 
 
@@ -564,7 +511,6 @@ def actividad_ocr_detalle(activity_id):
         detection=detection,
         active_page="actividad",
         back_url=url_for("actividad_detalle", activity_id=activity_id),
-        use_stored_ocr=True,
     )
 
 

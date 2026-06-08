@@ -223,7 +223,11 @@ def segment(
     # receives a clean single-band binary instead of the full noisy plate.
     binary = band_cleanup.isolate_text_band(binary)
     stages["7b_band_isolated"] = binary
-    binary = band_cleanup.remove_small_blobs(binary)
+
+    # Otsu usually already returns a compact character mask. A second global
+    # blob cleanup can be too destructive on clean plates and erase valid chars.
+    if selected_binarization != "otsu":
+        binary = band_cleanup.remove_small_blobs(binary)
     stages["7c_cleaned"] = binary
 
     # ── 4. Connected Components segmentation ─────────────────────────────────
