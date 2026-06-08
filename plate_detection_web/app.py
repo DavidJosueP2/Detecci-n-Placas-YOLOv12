@@ -1,17 +1,17 @@
 import base64
-from threading import Lock, Thread
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
-from werkzeug.utils import secure_filename
+from flask import Flask, Response, redirect, render_template, request, url_for
 
+from blueprints.api_bp import api_bp
+from blueprints.video_bp import video_bp
 from config import Config
+from src.char_recognizer import CharRecognizer
 from src.detector import PlateDetector
-from src.fuzzy_mamdani import get_mamdani_config, set_mamdani_config
 from src.incident_service import IncidentService
-from src.plate_reader import PlateReader
 from src.video_stream import VideoStream
 
 
@@ -48,16 +48,16 @@ except Exception as exc:
     detector_error = str(exc)
 
 try:
-    plate_reader = PlateReader(
-        model_path=Config.CHARACTER_MODEL_PATH,
-        confidence_threshold=Config.CHARACTER_CONFIDENCE_THRESHOLD,
-        image_size=Config.CHARACTER_IMAGE_SIZE,
+    plate_reader = CharRecognizer(
+        model_path=str(Config.CNN_MODEL_PATH),
         device=Config.DEVICE,
-        max_variants=Config.OCR_VARIANTS,
+        crop_source=Config.CNN_CROP_SOURCE,
     )
+    print(f"[OCR] CharRecognizer cargado: {Config.CNN_MODEL_PATH}")
 except Exception as exc:
     plate_reader = None
     reader_error = str(exc)
+    print(f"[OCR] CharRecognizer falló, sin OCR: {exc}")
 
 stream = VideoStream(
     detector=detector,
@@ -100,118 +100,11 @@ stream = VideoStream(
     detector_error=detector_error or reader_error,
 )
 
+app.stream = stream
+app.incident_service = incident_service
 
-camera_sources_cache = None
-camera_sources_scan_running = False
-camera_sources_lock = Lock()
-
-
-SPEED_CONFIG_ENV_KEYS = {
-    "line_a_left_y": "SPEED_LINE_A_LEFT_Y",
-    "line_a_right_y": "SPEED_LINE_A_RIGHT_Y",
-    "line_b_left_y": "SPEED_LINE_B_LEFT_Y",
-    "line_b_right_y": "SPEED_LINE_B_RIGHT_Y",
-    "roi_x1": "SPEED_ROI_X1",
-    "roi_x2": "SPEED_ROI_X2",
-    "distance_meters": "SPEED_DISTANCE_METERS",
-}
-EMAIL_CONFIG_ENV_KEYS = {
-    "enabled": "EMAIL_INCIDENTS_ENABLED",
-}
-
-
-def camera_backend_candidates():
-    backends = {
-        "msmf": cv2.CAP_MSMF,
-        "any": cv2.CAP_ANY,
-        "auto": cv2.CAP_ANY,
-    }
-    preferred = backends.get(str(Config.CAMERA_BACKEND).strip().lower(), cv2.CAP_MSMF)
-    ordered = [preferred, cv2.CAP_MSMF, cv2.CAP_ANY]
-    unique = []
-    for backend in ordered:
-        if backend not in unique:
-            unique.append(backend)
-    return unique
-
-
-def fallback_camera_sources():
-    configured_source = Config.VIDEO_SOURCE if isinstance(Config.VIDEO_SOURCE, int) else 0
-    values = list(range(max(2, Config.CAMERA_SCAN_LIMIT)))
-    if configured_source not in values:
-        values.insert(0, configured_source)
-    return [{"type": "camera", "value": value, "label": f"Camara {value}"} for value in values]
-
-
-def scan_camera_sources():
-    global camera_sources_cache, camera_sources_scan_running
-
-    cameras = fallback_camera_sources()
-    try:
-        discovered = []
-        backends = camera_backend_candidates()
-
-        for index in range(Config.CAMERA_SCAN_LIMIT):
-            opened = False
-            for backend in backends:
-                capture = cv2.VideoCapture(index, backend)
-                opened = capture.isOpened()
-                capture.release()
-                if opened:
-                    break
-
-            if opened:
-                discovered.append({"type": "camera", "value": index, "label": f"Camara {index}"})
-
-        if discovered:
-            known_values = {item["value"] for item in discovered}
-            for fallback in fallback_camera_sources():
-                if fallback["value"] not in known_values:
-                    discovered.append(fallback)
-            cameras = sorted(discovered, key=lambda item: int(item["value"]))
-    finally:
-        with camera_sources_lock:
-            camera_sources_cache = cameras
-            camera_sources_scan_running = False
-
-
-def start_camera_scan_if_needed():
-    global camera_sources_scan_running
-
-    with camera_sources_lock:
-        if camera_sources_scan_running:
-            return
-        camera_sources_scan_running = True
-
-    Thread(target=scan_camera_sources, daemon=True).start()
-
-
-def update_env_values(values):
-    env_path = Path(__file__).resolve().parent / ".env"
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    pending = {key: str(value) for key, value in values.items()}
-    updated_lines = []
-
-    for line in existing_lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in line:
-            updated_lines.append(line)
-            continue
-
-        key, _ = line.split("=", 1)
-        key = key.strip()
-        if key in pending:
-            updated_lines.append(f"{key}={pending.pop(key)}")
-        else:
-            updated_lines.append(line)
-
-    if pending:
-        if updated_lines and updated_lines[-1].strip():
-            updated_lines.append("")
-        for key, value in pending.items():
-            updated_lines.append(f"{key}={value}")
-
-    env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+app.register_blueprint(video_bp)
+app.register_blueprint(api_bp)
 
 
 def jpeg_data_url(image, quality=82):
@@ -226,15 +119,299 @@ def jpeg_data_url(image, quality=82):
     return f"data:image/jpeg;base64,{encoded}"
 
 
-def available_camera_sources():
-    with camera_sources_lock:
-        cached = [dict(item) for item in camera_sources_cache] if camera_sources_cache else None
+def image_data_url(image, ext=".png", quality=82):
+    if image is None or getattr(image, "size", 0) == 0:
+        return ""
 
-    if cached is not None:
-        return cached
+    params = []
+    mime = "image/png"
+    if ext.lower() in {".jpg", ".jpeg"}:
+        params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+        mime = "image/jpeg"
 
-    start_camera_scan_if_needed()
-    return fallback_camera_sources()
+    success, buffer = cv2.imencode(ext, image, params)
+    if not success:
+        return ""
+    encoded = base64.b64encode(buffer.tobytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def image_shape_label(image):
+    if image is None or getattr(image, "size", 0) == 0:
+        return "--"
+    h, w = image.shape[:2]
+    return f"{w} x {h} px"
+
+
+def make_ocr_step(title, description, image, used=True):
+    return {
+        "title": title,
+        "description": description,
+        "image_url": image_data_url(image),
+        "shape": image_shape_label(image),
+        "used": used,
+    }
+
+
+def load_debug_stage(debug_dir, stage):
+    image_path = debug_dir / f"{stage}.png"
+    if not image_path.exists():
+        return None
+    return cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+
+
+def make_character_strip(char_images):
+    if not char_images:
+        return None
+
+    cells = []
+    for image in char_images:
+        if image is None or getattr(image, "size", 0) == 0:
+            continue
+        if image.dtype in {np.float32, np.float64}:
+            normalized = image
+            if float(np.max(normalized)) <= 1.0:
+                normalized = normalized * 255.0
+            gray = np.clip(normalized, 0, 255).astype(np.uint8)
+        else:
+            gray = image.astype(np.uint8)
+        if len(gray.shape) == 3:
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        cells.append(cv2.resize(gray, (72, 72), interpolation=cv2.INTER_NEAREST))
+
+    if not cells:
+        return None
+
+    gap = 10
+    label_h = 22
+    width = len(cells) * 72 + (len(cells) + 1) * gap
+    height = 72 + label_h + gap * 2
+    canvas = np.full((height, width, 3), 255, dtype=np.uint8)
+
+    for index, cell in enumerate(cells):
+        x = gap + index * (72 + gap)
+        y = gap
+        bgr = cv2.cvtColor(cell, cv2.COLOR_GRAY2BGR)
+        canvas[y:y + 72, x:x + 72] = bgr
+        cv2.rectangle(canvas, (x, y), (x + 72, y + 72), (210, 220, 235), 1)
+        cv2.putText(
+            canvas,
+            f"C{index + 1}",
+            (x + 22, y + 92),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (15, 23, 42),
+            1,
+            cv2.LINE_AA,
+        )
+
+    return canvas
+
+
+def draw_classification_overlay(base_image, bboxes, characters):
+    if base_image is None or getattr(base_image, "size", 0) == 0:
+        return None
+    if not bboxes or not characters:
+        return None
+
+    if len(base_image.shape) == 2:
+        canvas = cv2.cvtColor(base_image, cv2.COLOR_GRAY2BGR)
+    else:
+        canvas = base_image.copy()
+
+    img_h, img_w = canvas.shape[:2]
+    for index, (bbox, char) in enumerate(zip(bboxes, characters)):
+        x1 = max(0, min(img_w - 1, int(bbox.get("x", 0))))
+        y1 = max(0, min(img_h - 1, int(bbox.get("y", 0))))
+        x2 = max(0, min(img_w - 1, x1 + int(bbox.get("w", 0))))
+        y2 = max(0, min(img_h - 1, y1 + int(bbox.get("h", 0))))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        conf = float(char.get("confidence", 0.0) or 0.0)
+        color = (0, int(255 * max(0.0, min(1.0, conf))), int(255 * (1.0 - max(0.0, min(1.0, conf)))))
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+
+        label = f"{index}:{char.get('value', '')} {conf:.0%}"
+        fs = 0.45
+        th = 1
+        (tw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+        tx = max(0, x1)
+        ty = max(lh + 3, y1 - 3)
+        cv2.rectangle(canvas, (tx, ty - lh - 2), (tx + tw + 4, ty + 2), color, -1)
+        cv2.putText(
+            canvas,
+            label,
+            (tx + 2, ty),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            fs,
+            (0, 0, 0),
+            th,
+            cv2.LINE_AA,
+        )
+
+    return canvas
+
+
+OCR_STAGE_INFO = {
+    "0_perspective_correction": (
+        "Correccion de perspectiva",
+        "Intenta enderezar la placa antes de segmentar caracteres.",
+        True,
+    ),
+    "1_original": (
+        "Recorte normalizado",
+        "Placa redimensionada al ancho canonico usado por segmentacion.",
+        True,
+    ),
+    "2_grayscale": (
+        "Escala de grises",
+        "Convierte el recorte a un solo canal para preparar binarizacion.",
+        True,
+    ),
+    "3_clahe": (
+        "Contraste local",
+        "Mejora contraste por zonas para placas con iluminacion irregular.",
+        False,
+    ),
+    "4_denoised": (
+        "Suavizado",
+        "Reduce ruido manteniendo bordes antes de separar caracteres.",
+        True,
+    ),
+    "5_binary_selected": (
+        "Binarizacion",
+        "Mascara generada con el metodo configurado para buscar regiones de caracteres.",
+        True,
+    ),
+    "7b_band_isolated": (
+        "Banda de caracteres",
+        "Conserva la franja principal de letras y numeros.",
+        True,
+    ),
+    "7c_cleaned": (
+        "Limpieza de ruido",
+        "Elimina componentes pequenos antes de buscar candidatos.",
+        True,
+    ),
+    "8_cc_bboxes": (
+        "Candidatos por componentes",
+        "Cajas iniciales encontradas por componentes conectados.",
+        True,
+    ),
+    "10_final_bboxes": (
+        "Bounding boxes de segmentacion",
+        "Cajas validadas sobre la imagen normalizada del segmentador.",
+        True,
+    ),
+    "11_chars_strip": (
+        "Caracteres recortados",
+        "Cada recorte individual que se envia a la CNN en orden izquierda a derecha.",
+        True,
+    ),
+}
+
+
+def detection_confidence_from_characters(characters):
+    if not characters:
+        return None
+    confidences = [
+        float(char.get("confidence", 0.0))
+        for char in characters
+        if char.get("confidence") is not None
+    ]
+    if not confidences:
+        return None
+    return sum(confidences) / len(confidences)
+
+
+def load_static_image(relative_path):
+    if not relative_path:
+        return None
+    path = Path(relative_path)
+    if not path.is_absolute():
+        path = Config.STATIC_DIR / path
+    if not path.exists():
+        return None
+    return cv2.imread(str(path), cv2.IMREAD_COLOR)
+
+
+def build_ocr_debug(crop, stored_characters=None):
+    steps = []
+    debug = None
+
+    if crop is None or getattr(crop, "size", 0) == 0:
+        return steps, debug
+
+    steps.append(make_ocr_step(
+        "Recorte recibido",
+        "Recorte de placa usado para regenerar el diagnostico OCR.",
+        crop,
+        True,
+    ))
+
+    if plate_reader is None or not hasattr(plate_reader, "read_debug"):
+        return steps, debug
+
+    with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+        debug_dir = Path(temp_dir) / "segmentacion"
+        debug = plate_reader.read_debug(crop, debug_dir=debug_dir)
+
+        for stage, (title, description, used) in OCR_STAGE_INFO.items():
+            if stage == "11_chars_strip":
+                image = make_character_strip(debug.get("char_images", []) if debug else [])
+                if image is None:
+                    image = load_debug_stage(debug_dir, stage)
+            else:
+                image = load_debug_stage(debug_dir, stage)
+            if image is None:
+                continue
+            if stage == "5_binary_selected":
+                method = (debug or {}).get("binarization_method", "otsu")
+                method_label = "adaptativa" if method == "adaptive" else "Otsu"
+                title = f"Binarizacion {method_label}"
+            steps.append(make_ocr_step(title, description, image, used))
+
+        if stored_characters is not None:
+            bbox_image = draw_classification_overlay(
+                (debug.get("stages") or {}).get("1_original"),
+                debug.get("bboxes", []),
+                stored_characters,
+            )
+        else:
+            bbox_image = debug.get("bbox_image") if debug else None
+        if bbox_image is not None and getattr(bbox_image, "size", 0) > 0:
+            steps.append(make_ocr_step(
+                "Clasificacion de caracteres",
+                "Cajas finales con letra o numero reconocido y confianza individual.",
+                bbox_image,
+                True,
+            ))
+
+    return steps, debug
+
+
+def render_ocr_detail(crop, detection, active_page, back_url, use_stored_ocr=False):
+    stored_characters = (detection or {}).get("characters") if use_stored_ocr else None
+    steps, debug = build_ocr_debug(crop, stored_characters=stored_characters)
+    debug_text = debug.get("text") if debug else ""
+    debug_conf = debug.get("confidence") if debug else None
+
+    display_detection = dict(detection or {})
+    if debug is not None and not use_stored_ocr:
+        display_detection["plate_text"] = debug_text
+        display_detection["plate_text_confidence"] = debug_conf
+
+    return render_template(
+        "ocr_detalle.html",
+        active_page=active_page,
+        detection=display_detection,
+        steps=steps,
+        reader_error=reader_error,
+        ocr_variants="CNN .pth",
+        character_image_size=28,
+        back_url=back_url,
+    )
 
 
 @app.route("/")
@@ -335,118 +512,59 @@ def ocr_detalle(index):
     detections = status.get("detections", [])
     detection = detections[index] if 0 <= index < len(detections) else None
     crop_bytes = stream.current_crop_at(index)
-    crop = cv2.imdecode(np.frombuffer(crop_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    crop = None
+    if crop_bytes:
+        crop = cv2.imdecode(np.frombuffer(crop_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-    steps = []
-    if plate_reader is not None and crop is not None:
-        for step in plate_reader.preprocessing_debug(crop):
-            steps.append(
-                {
-                    **step,
-                    "image_url": jpeg_data_url(step["image"]),
-                    "image": None,
-                }
-            )
-
-    return render_template(
-        "ocr_detalle.html",
-        active_page="foto_radar",
-        index=index,
+    return render_ocr_detail(
+        crop=crop,
         detection=detection,
-        steps=steps,
-        reader_error=reader_error,
-        ocr_variants=Config.OCR_VARIANTS,
-        character_image_size=Config.CHARACTER_IMAGE_SIZE,
+        active_page="foto_radar",
+        back_url=url_for("index"),
     )
 
 
-@app.route("/api/speed_config", methods=["GET", "POST"])
-def speed_config():
-    if request.method == "GET":
-        return jsonify({"ok": True, "config": stream.current_speed_config()})
+@app.route("/incidencias/<incident_id>/ocr_detalle")
+def incidencia_ocr_detalle(incident_id):
+    incident = incident_service.get_incident(incident_id)
+    if incident is None:
+        return render_template("incidencia_no_encontrada.html", active_page="incidencias"), 404
 
-    payload = request.get_json(silent=True) or {}
-    accepted = {}
-    numeric_fields = {
-        "line_a_left_y",
-        "line_a_right_y",
-        "line_b_left_y",
-        "line_b_right_y",
-        "roi_x1",
-        "roi_x2",
-        "distance_meters",
+    crop = load_static_image(incident.get("crop_path"))
+    detection = {
+        "plate_text": incident.get("plate_text"),
+        "plate_text_confidence": detection_confidence_from_characters(
+            incident.get("characters") or []
+        ),
+        "characters": incident.get("characters") or [],
     }
-    for field in numeric_fields:
-        if field not in payload:
-            continue
-        try:
-            accepted[field] = float(payload[field])
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
+    return render_ocr_detail(
+        crop=crop,
+        detection=detection,
+        active_page="incidencias",
+        back_url=url_for("incidencia_detalle", incident_id=incident_id),
+        use_stored_ocr=True,
+    )
 
-    updated = stream.update_speed_config(**accepted)
-    env_values = {
-        env_key: f"{updated[field]:.4f}".rstrip("0").rstrip(".")
-        for field, env_key in SPEED_CONFIG_ENV_KEYS.items()
-        if field in accepted
+
+@app.route("/actividad/<activity_id>/ocr_detalle")
+def actividad_ocr_detalle(activity_id):
+    item = incident_service.get_activity(activity_id)
+    if item is None:
+        return render_template("actividad_no_encontrada.html", active_page="actividad"), 404
+
+    crop = load_static_image(item.get("crop_path"))
+    detection = {
+        "plate_text": item.get("plate_text"),
+        "plate_text_confidence": item.get("plate_confidence"),
+        "characters": item.get("characters") or [],
     }
-    if env_values:
-        update_env_values(env_values)
-
-    return jsonify({"ok": True, "config": updated})
-
-
-@app.route("/api/ocr_zone_config", methods=["GET", "POST"])
-def ocr_zone_config():
-    if request.method == "GET":
-        return jsonify({"ok": True, "config": stream.current_ocr_zone_config()})
-
-    payload = request.get_json(silent=True) or {}
-    accepted = {}
-    for field in {"x1", "y1", "x2", "y2"}:
-        if field not in payload:
-            continue
-        try:
-            accepted[field] = float(payload[field])
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": f"Valor invalido: {field}"}), 400
-
-    updated = stream.update_ocr_zone_config(**accepted)
-    return jsonify({"ok": True, "config": updated})
-
-
-@app.route("/api/mamdani_config", methods=["GET", "POST"])
-def mamdani_config():
-    if request.method == "GET":
-        return jsonify({"ok": True, "config": get_mamdani_config()})
-
-    payload = request.get_json(silent=True) or {}
-    try:
-        updated = set_mamdani_config(payload)
-    except (TypeError, ValueError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-
-    return jsonify({"ok": True, "config": updated})
-
-
-@app.route("/api/email_config", methods=["GET", "POST"])
-def email_config():
-    if request.method == "GET":
-        current = incident_service.current_email_config()
-        return jsonify({"ok": True, "config": {"enabled": current["enabled"]}})
-
-    payload = request.get_json(silent=True) or {}
-    enabled = bool(payload.get("enabled", False))
-    updated = incident_service.update_email_config(enabled=enabled)
-    update_env_values({"EMAIL_INCIDENTS_ENABLED": "1" if updated["enabled"] else "0"})
-    return jsonify({"ok": True, "config": {"enabled": updated["enabled"]}})
-
-
-@app.route("/video_feed")
-def video_feed():
-    return Response(
-        stream.frames(),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
+    return render_ocr_detail(
+        crop=crop,
+        detection=detection,
+        active_page="actividad",
+        back_url=url_for("actividad_detalle", activity_id=activity_id),
+        use_stored_ocr=True,
     )
 
 
@@ -455,100 +573,9 @@ def plate_crop():
     return Response(stream.current_crop(), mimetype="image/jpeg")
 
 
-@app.route("/plate_crop/<int:index>")
-def plate_crop_at(index):
-    return Response(stream.current_crop_at(index), mimetype="image/jpeg")
-
-
 @app.route("/current_frame")
 def current_frame():
     return Response(stream.current_frame(), mimetype="image/jpeg")
-
-
-@app.route("/status")
-def status():
-    return jsonify(stream.current_status())
-
-
-@app.route("/sources")
-def sources():
-    return jsonify(
-        {
-            "ok": True,
-            "sources": available_camera_sources()
-            + [{"type": "video", "value": "video", "label": "Video"}],
-        }
-    )
-
-
-@app.route("/toggle_pause", methods=["POST"])
-def toggle_pause():
-    paused = stream.toggle_pause()
-    return jsonify({"ok": True, "paused": paused})
-
-
-@app.route("/play", methods=["POST"])
-def play():
-    paused = stream.set_paused(False)
-    return jsonify({"ok": True, "paused": paused})
-
-
-@app.route("/pause", methods=["POST"])
-def pause():
-    paused = stream.set_paused(True)
-    return jsonify({"ok": True, "paused": paused})
-
-
-@app.route("/seek", methods=["POST"])
-def seek():
-    payload = request.get_json(silent=True) or {}
-    if "seconds" in payload:
-        position = stream.seek_to(payload["seconds"])
-    else:
-        position = stream.seek_relative(payload.get("delta", 0))
-    return jsonify({"ok": True, "position_seconds": position})
-
-
-@app.route("/upload_video", methods=["POST"])
-def upload_video():
-    file = request.files.get("video")
-    if not file or not file.filename:
-        return jsonify({"ok": False, "error": "No se recibio ningun video."}), 400
-
-    extension = Path(file.filename).suffix.lower()
-    if extension not in Config.ALLOWED_VIDEO_EXTENSIONS:
-        return jsonify({"ok": False, "error": "Formato de video no soportado."}), 400
-
-    filename = secure_filename(file.filename)
-    destination = Config.UPLOAD_DIR / filename
-    counter = 1
-    while destination.exists():
-        destination = Config.UPLOAD_DIR / f"{destination.stem}_{counter}{extension}"
-        counter += 1
-
-    file.save(destination)
-    stream.set_source(str(destination), source_label=destination.name)
-    return jsonify(
-        {
-            "ok": True,
-            "filename": destination.name,
-            "video_url": url_for("static", filename=f"captures/{destination.name}"),
-        }
-    )
-
-
-@app.route("/use_camera", methods=["POST"])
-def use_camera():
-    payload = request.get_json(silent=True) or {}
-    source = payload.get("source", Config.VIDEO_SOURCE)
-
-    try:
-        source = int(source)
-    except (TypeError, ValueError):
-        source = Config.VIDEO_SOURCE
-
-    stream.set_source(source, source_label=f"Camara {source}")
-    return jsonify({"ok": True, "source": source, "label": f"Camara {source}"})
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from threading import Event, Lock, Thread
+from threading import Lock
 
 import cv2
-import numpy as np
 
+from src.activity_tracker import ActivityTracker
+from src.crop_quality import plate_crop_cut_risk, plate_crop_ghost_risk, plate_crop_quality
 from src.frame_processor import (
     encode_jpeg,
     placeholder_crop,
@@ -13,58 +13,12 @@ from src.frame_processor import (
     process_frame,
     resize_to_max_width,
 )
+from src.lightweight_tracker import LightweightTracker
+from src.live_frame_reader import LiveFrameReader
+from src.plate_memory import PlateMemory
 from src.plate_postprocess import postprocess_ecuador_plate
 from src.speed_estimator import SpeedEstimator
 from src.utils import detection_status, now_label
-
-
-class LiveFrameReader:
-    def __init__(self, capture):
-        self.capture = capture
-        self.lock = Lock()
-        self.stop_event = Event()
-        self.frame = None
-        self.version = 0
-        self.timestamp = 0.0
-        self.last_ok_at = time.monotonic()
-        self.thread = Thread(target=self._read_loop, daemon=True)
-        self.thread.start()
-
-    def read(self, last_version=0, timeout_seconds=0.25):
-        deadline = time.monotonic() + timeout_seconds
-        while not self.stop_event.is_set():
-            with self.lock:
-                if self.frame is not None and self.version != last_version:
-                    return True, self.frame.copy(), self.timestamp, self.version
-
-            if time.monotonic() >= deadline:
-                with self.lock:
-                    if self.frame is not None:
-                        return True, self.frame.copy(), self.timestamp, self.version
-                return False, None, 0.0, last_version
-
-            time.sleep(0.003)
-
-        return False, None, 0.0, last_version
-
-    def close(self):
-        self.stop_event.set()
-        self.thread.join(timeout=0.5)
-        self.capture.release()
-
-    def _read_loop(self):
-        while not self.stop_event.is_set():
-            ok, frame = self.capture.read()
-            if not ok:
-                time.sleep(0.02)
-                continue
-
-            timestamp = time.monotonic()
-            with self.lock:
-                self.frame = frame
-                self.version += 1
-                self.timestamp = timestamp
-                self.last_ok_at = timestamp
 
 
 class VideoStream:
@@ -151,7 +105,6 @@ class VideoStream:
         self.last_detection_completed_at = 0.0
         self.last_frame_started_at = 0.0
         self.lock = Lock()
-        self.track_lock = Lock()
         self.speed_estimator = SpeedEstimator(
             line_a_y=speed_line_a_y,
             line_b_y=speed_line_b_y,
@@ -167,11 +120,16 @@ class VideoStream:
             min_movement_px=speed_min_movement_px,
             min_partial_progress=speed_min_partial_progress,
         )
-        self.plate_memory = {}
-        self.activity_tracks = {}
+        self.plate_memory = PlateMemory()
+        self.activity_tracker = ActivityTracker(
+            incident_service=incident_service,
+            speed_estimator=self.speed_estimator,
+            ocr_zone_fn=self.ocr_zone_for_frame,
+            plate_reader=plate_reader,
+            debug_root=incident_service.activity_root if incident_service is not None else None,
+        )
         self.last_detections = []
-        self.lightweight_tracks = {}
-        self.next_track_id = 1
+        self.tracker = LightweightTracker()
         self.ocr_executor = ThreadPoolExecutor(max_workers=1)
         self.detector_executor = ThreadPoolExecutor(max_workers=1)
         self.pending_detection = None
@@ -238,7 +196,7 @@ class VideoStream:
                 source_changed = capture_version != self.source_version
 
             if source_changed:
-                self._flush_activity_tracks()
+                self.activity_tracker.flush()
                 self._close_capture(capture, live_reader)
                 capture, capture_version, source = self._open_capture()
                 self._update_capture_info(capture, source)
@@ -262,14 +220,12 @@ class VideoStream:
             if seek_request_seconds is not None and isinstance(source, str):
                 seek_to = max(0.0, min(seek_request_seconds, self.duration_seconds or seek_request_seconds))
                 capture.set(cv2.CAP_PROP_POS_MSEC, seek_to * 1000)
-                self._flush_activity_tracks()
+                self.activity_tracker.flush()
                 self.speed_estimator.reset()
                 self.last_ocr_attempts.clear()
                 self.last_ocr_attempt_at = 0.0
                 self.last_detections = []
-                with self.track_lock:
-                    self.lightweight_tracks.clear()
-                self.next_track_id = 1
+                self.tracker.clear()
                 self.pending_ocr.clear()
                 last_emit_time = 0.0
                 frame_index = 0
@@ -278,7 +234,7 @@ class VideoStream:
             if paused:
                 if paused_frame is not None:
                     yield self._multipart_payload(paused_frame)
-                self._flush_activity_tracks()
+                self.activity_tracker.flush()
                 self._close_capture(capture, live_reader)
                 return
 
@@ -290,15 +246,13 @@ class VideoStream:
             if not ok:
                 if isinstance(source, str):
                     capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    self._flush_activity_tracks()
+                    self.activity_tracker.flush()
                     self.speed_estimator.reset()
                     self.plate_memory.clear()
                     self.last_ocr_attempts.clear()
                     self.last_ocr_attempt_at = 0.0
                     self.last_detections = []
-                    with self.track_lock:
-                        self.lightweight_tracks.clear()
-                    self.next_track_id = 1
+                    self.tracker.clear()
                     self.pending_ocr.clear()
                     last_emit_time = 0.0
                     frame_index = 0
@@ -385,13 +339,11 @@ class VideoStream:
             self.position_seconds = 0.0
             self.duration_seconds = 0.0
             self.is_seekable = isinstance(source, str)
-            self._flush_activity_tracks()
+            self.activity_tracker.flush()
             self.speed_estimator.reset()
             self.plate_memory.clear()
             self.last_detections = []
-            with self.track_lock:
-                self.lightweight_tracks.clear()
-            self.next_track_id = 1
+            self.tracker.clear()
             self.pending_ocr.clear()
             self.pending_detection = None
             self.pending_detection_version = None
@@ -680,8 +632,7 @@ class VideoStream:
         }
 
     def _lightweight_track_count(self):
-        with self.track_lock:
-            return len(self.lightweight_tracks)
+        return self.tracker.count()
 
     def _detection_mode_label(self):
         if self.live_detection_mode == "track":
@@ -778,64 +729,7 @@ class VideoStream:
             return capture_version == self.source_version
 
     def _assign_lightweight_track_ids(self, detections, timestamp):
-        with self.track_lock:
-            used_tracks = set()
-            for detection in sorted(
-                detections,
-                key=lambda item: item.get("confidence", 0.0),
-                reverse=True,
-            ):
-                track_id = self._match_lightweight_track(detection, used_tracks)
-                if track_id is None:
-                    track_id = self.next_track_id
-                    self.next_track_id += 1
-
-                detection["track_id"] = track_id
-                used_tracks.add(track_id)
-                self.lightweight_tracks[track_id] = {
-                    "box": self._box_tuple(detection),
-                    "center": self._center(detection),
-                    "timestamp": timestamp,
-                    "seen_at": time.monotonic(),
-                }
-
-            self._prune_lightweight_tracks()
-        return detections
-
-    def _match_lightweight_track(self, detection, used_tracks):
-        best_track_id = None
-        best_score = 0.0
-        box = self._box_tuple(detection)
-        center = self._center(detection)
-        width = max(1.0, box[2] - box[0])
-        height = max(1.0, box[3] - box[1])
-        distance_limit = max(180.0, (width + height) * 2.0)
-
-        for track_id, track in self.lightweight_tracks.items():
-            if track_id in used_tracks:
-                continue
-
-            iou = self._box_iou(box, track["box"])
-            distance = ((center[0] - track["center"][0]) ** 2 + (center[1] - track["center"][1]) ** 2) ** 0.5
-            if iou < 0.02 and distance > distance_limit:
-                continue
-
-            score = iou * 1.4 + max(0.0, 1.0 - distance / distance_limit) * 0.65
-            if score > best_score:
-                best_score = score
-                best_track_id = track_id
-
-        return best_track_id
-
-    def _prune_lightweight_tracks(self):
-        now = time.monotonic()
-        expired = [
-            track_id
-            for track_id, track in self.lightweight_tracks.items()
-            if now - track["seen_at"] > 4.0
-        ]
-        for track_id in expired:
-            self.lightweight_tracks.pop(track_id, None)
+        return self.tracker.assign(detections, timestamp)
 
     @staticmethod
     def _box_tuple(detection):
@@ -852,20 +746,6 @@ class VideoStream:
             (float(detection["x1"]) + float(detection["x2"])) / 2,
             (float(detection["y1"]) + float(detection["y2"])) / 2,
         )
-
-    @staticmethod
-    def _box_iou(first, second):
-        x1 = max(first[0], second[0])
-        y1 = max(first[1], second[1])
-        x2 = min(first[2], second[2])
-        y2 = min(first[3], second[3])
-        inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-        if inter <= 0:
-            return 0.0
-
-        first_area = max(1.0, first[2] - first[0]) * max(1.0, first[3] - first[1])
-        second_area = max(1.0, second[2] - second[0]) * max(1.0, second[3] - second[1])
-        return inter / (first_area + second_area - inter)
 
     @staticmethod
     def _normalize_ocr_zone(x1, y1, x2, y2):
@@ -950,9 +830,9 @@ class VideoStream:
             )
             snapshot_crop = self._crop_detection(frame, detection)
             if snapshot_crop is not None:
-                detection["_crop_quality"] = self._plate_crop_quality(snapshot_crop)
-                detection["_crop_cut_risk"] = self._plate_crop_cut_risk(snapshot_crop)
-                detection["_crop_ghost_risk"] = self._plate_crop_ghost_risk(snapshot_crop)
+                detection["_crop_quality"] = plate_crop_quality(snapshot_crop)
+                detection["_crop_cut_risk"] = plate_crop_cut_risk(snapshot_crop)
+                detection["_crop_ghost_risk"] = plate_crop_ghost_risk(snapshot_crop)
                 if snapshot_frame is None:
                     snapshot_frame = frame.copy()
                 detection["_snapshot_crop"] = snapshot_crop
@@ -962,7 +842,7 @@ class VideoStream:
             plate_text = ""
             plate_text_confidence = 0.0
             plate_chars = []
-            cached = self._cached_plate_text(detection)
+            cached = self.plate_memory.get(detection)
             if cached:
                 plate_text = cached["text"]
                 plate_text_confidence = cached["confidence"]
@@ -988,164 +868,17 @@ class VideoStream:
             ]
             if snapshot_crop is not None:
                 activity_frame = snapshot_frame if snapshot_frame is not None else frame
-                self._update_activity_track(detection, activity_frame, snapshot_crop, timestamp)
+                self.activity_tracker.update(detection, activity_frame, snapshot_crop, timestamp, self.source_label)
             enriched.append(detection)
 
-        self._prune_activity_tracks()
+        self.activity_tracker.prune()
         return enriched
-
-    def _update_activity_track(self, detection, frame, crop, timestamp):
-        track_id = detection.get("track_id")
-        if track_id is None or crop is None or crop.size == 0:
-            return
-
-        key = f"track:{track_id}"
-        now = time.monotonic()
-        activity = self.activity_tracks.get(key)
-        if activity is None:
-            activity = {
-                "track_id": track_id,
-                "started_at": datetime.now().isoformat(timespec="seconds"),
-                "started_monotonic": now,
-                "last_seen_monotonic": now,
-                "last_timestamp": timestamp,
-                "source_label": self.source_label,
-                "plate_text": "",
-                "plate_original_text": "",
-                "characters": [],
-                "plate_confidence": 0.0,
-                "detection_confidence": 0.0,
-                "speed_kmh": None,
-                "best_score": -1.0,
-                "best_quality": 0.0,
-                "best_frame": None,
-                "best_crop": None,
-                "best_detection": None,
-            }
-            self.activity_tracks[key] = activity
-
-        activity["last_seen_monotonic"] = now
-        activity["last_timestamp"] = timestamp
-        activity["source_label"] = self.source_label
-        if detection.get("plate_text"):
-            activity["plate_text"] = detection.get("plate_text", "")
-            activity["plate_original_text"] = detection.get("plate_original_text", "")
-            activity["plate_confidence"] = float(detection.get("plate_text_confidence", 0.0))
-            activity["characters"] = detection.get("characters", [])
-        if detection.get("speed_kmh") is not None:
-            activity["speed_kmh"] = float(detection["speed_kmh"])
-        activity["detection_confidence"] = max(
-            activity.get("detection_confidence", 0.0),
-            float(detection.get("confidence", 0.0)),
-        )
-
-        edge_clipped = bool(detection.get("_edge_clipped", False))
-        cut_risk = float(detection.get("_crop_cut_risk", 0.0))
-        ghost_risk = float(detection.get("_crop_ghost_risk", 0.0))
-        if edge_clipped or cut_risk >= 0.72:
-            return
-
-        width = max(1.0, float(detection.get("x2", 0.0)) - float(detection.get("x1", 0.0)))
-        quality = float(detection.get("_crop_quality", 0.0))
-        zone_bonus = 1000.0 if detection.get("ocr_zone_active") else 0.0
-        ocr_bonus = 1800.0 if detection.get("plate_text") else 0.0
-        ghost_penalty = max(0.0, ghost_risk - 0.48) * 2200.0
-        score = (
-            zone_bonus
-            + ocr_bonus
-            + min(width, 320.0) * 1.5
-            + quality * 7.0
-            + float(detection.get("confidence", 0.0)) * 80.0
-            - ghost_penalty
-        )
-        if score > activity.get("best_score", -1.0):
-            activity["best_score"] = score
-            activity["best_quality"] = quality
-            activity["best_frame"] = frame.copy()
-            activity["best_crop"] = crop.copy()
-            activity["best_detection"] = self._evidence_detection(detection)
-
-    def _prune_activity_tracks(self, max_age_seconds=4.0):
-        now = time.monotonic()
-        expired = [
-            key
-            for key, activity in self.activity_tracks.items()
-            if now - activity.get("last_seen_monotonic", now) > max_age_seconds
-        ]
-        for key in expired:
-            self._finalize_activity_track(key)
-
-    def _flush_activity_tracks(self):
-        for key in list(self.activity_tracks):
-            self._finalize_activity_track(key)
-
-    def _finalize_activity_track(self, key):
-        activity = self.activity_tracks.pop(key, None)
-        if not activity or self.incident_service is None:
-            return
-        if not hasattr(self.incident_service, "record_activity"):
-            return
-        if not str(activity.get("plate_text") or "").strip():
-            return
-        if activity.get("best_frame") is None or activity.get("best_crop") is None:
-            return
-
-        frame_bytes = self._activity_frame_bytes(activity)
-        crop_bytes = encode_jpeg(activity["best_crop"], quality=82)
-        if frame_bytes is None or crop_bytes is None:
-            return
-
-        ended_at = datetime.now().isoformat(timespec="seconds")
-        duration = max(
-            0.0,
-            float(activity.get("last_seen_monotonic", time.monotonic()))
-            - float(activity.get("started_monotonic", time.monotonic())),
-        )
-        self.incident_service.record_activity(
-            {
-                "track_id": activity.get("track_id"),
-                "source_label": activity.get("source_label", self.source_label),
-                "started_at": activity.get("started_at", ended_at),
-                "ended_at": ended_at,
-                "duration_seconds": duration,
-                "plate_text": activity.get("plate_text", ""),
-                "plate_original_text": activity.get("plate_original_text", ""),
-                "characters": activity.get("characters", []),
-                "plate_confidence": activity.get("plate_confidence", 0.0),
-                "detection_confidence": activity.get("detection_confidence", 0.0),
-                "speed_kmh": activity.get("speed_kmh"),
-                "frame_bytes": frame_bytes,
-                "crop_bytes": crop_bytes,
-            }
-        )
-
-    def _activity_frame_bytes(self, activity):
-        frame = activity.get("best_frame")
-        detection = activity.get("best_detection")
-        if frame is None:
-            return None
-
-        if detection is None:
-            return encode_jpeg(frame, quality=82)
-
-        try:
-            speed_lines = self.speed_estimator.lines_for_frame(frame.shape)
-            evidence_frame, _, _ = process_frame(
-                frame,
-                [detection],
-                speed_lines=speed_lines,
-                ocr_zone=self.ocr_zone_for_frame(frame.shape),
-                stats=None,
-            )
-            return encode_jpeg(evidence_frame, quality=82)
-        except Exception:
-            return encode_jpeg(frame, quality=82)
 
     def _submit_ocr(self, detection, crop):
         if crop is None or self.plate_reader is None:
             return
 
-        key = self._plate_memory_key(detection)
+        key = self.plate_memory.key_for(detection)
         if key in self.pending_ocr:
             return
 
@@ -1170,7 +903,7 @@ class VideoStream:
             if not corrected_text:
                 continue
 
-            previous = self.plate_memory.get(key)
+            previous = self.plate_memory.get_raw(key)
             if previous and len(corrected_text) < len(previous["text"]) and confidence < previous["confidence"]:
                 continue
 
@@ -1180,7 +913,7 @@ class VideoStream:
                     f"{postprocess['texto_limpio']} -> {postprocess['texto_corregido']}"
                 )
 
-            self.plate_memory[key] = {
+            self.plate_memory.store(key, {
                 "text": corrected_text,
                 "original_text": postprocess["texto_original"],
                 "clean_text": postprocess["texto_limpio"],
@@ -1191,10 +924,10 @@ class VideoStream:
                 ],
                 "postprocess": postprocess,
                 "seen_at": time.monotonic(),
-            }
+            })
 
     def _apply_cached_plate_text(self, detection):
-        cached = self._cached_plate_text(detection)
+        cached = self.plate_memory.get(detection)
         if not cached:
             return detection
 
@@ -1218,7 +951,7 @@ class VideoStream:
         ]
         candidates.sort(
             key=lambda item: (
-                0 if self._cached_plate_text(item) else 1,
+                0 if self.plate_memory.get(item) else 1,
                 item.get("confidence", 0.0),
             ),
             reverse=True,
@@ -1238,14 +971,14 @@ class VideoStream:
         if float(detection.get("_crop_ghost_risk", 0.0)) >= 0.74:
             return False
 
-        key = self._plate_memory_key(detection)
+        key = self.plate_memory.key_for(detection)
         if key in self.pending_ocr:
             return False
 
         if "_crop_quality" in detection and float(detection.get("_crop_quality", 0.0)) < 18.0:
             return False
 
-        cached = self.plate_memory.get(key)
+        cached = self.plate_memory.get_raw(key)
         interval = (
             self.ocr_interval_seconds
             if cached and cached.get("text")
@@ -1260,32 +993,11 @@ class VideoStream:
     def _mark_ocr_attempt(self, detection):
         now = time.monotonic()
         self.last_ocr_attempt_at = now
-        self.last_ocr_attempts[self._plate_memory_key(detection)] = now
-
-    def _cached_plate_text(self, detection):
-        cached = self.plate_memory.get(self._plate_memory_key(detection))
-        if cached is None:
-            return None
-
-        if time.monotonic() - cached["seen_at"] > 5:
-            return None
-
-        cached["seen_at"] = time.monotonic()
-        return cached
-
-    @staticmethod
-    def _plate_memory_key(detection):
-        track_id = detection.get("track_id")
-        if track_id is not None:
-            return f"track:{track_id}"
-
-        center_x = (detection["x1"] + detection["x2"]) / 2
-        center_y = (detection["y1"] + detection["y2"]) / 2
-        return f"pos:{round(center_x / 80)}:{round(center_y / 80)}"
+        self.last_ocr_attempts[self.plate_memory.key_for(detection)] = now
 
     def _stabilize_plate_text(self, detection, text, confidence, characters):
-        key = self._plate_memory_key(detection)
-        previous = self.plate_memory.get(key)
+        key = self.plate_memory.key_for(detection)
+        previous = self.plate_memory.get_raw(key)
         postprocess = postprocess_ecuador_plate(text, confidence, characters)
         clean_text = postprocess["texto_corregido"]
 
@@ -1298,7 +1010,7 @@ class VideoStream:
                 {"value": char["value"], "confidence": char["confidence"]}
                 for char in characters
             ]
-            self.plate_memory[key] = {
+            self.plate_memory.store(key, {
                 "text": clean_text,
                 "original_text": postprocess["texto_original"],
                 "clean_text": postprocess["texto_limpio"],
@@ -1306,7 +1018,7 @@ class VideoStream:
                 "characters": stored_characters,
                 "postprocess": postprocess,
                 "seen_at": time.monotonic(),
-            }
+            })
             detection["plate_original_text"] = postprocess["texto_original"]
             detection["plate_clean_text"] = postprocess["texto_limpio"]
             detection["plate_postprocess"] = postprocess
@@ -1333,161 +1045,32 @@ class VideoStream:
             return None
         return frame[y1:y2, x1:x2].copy()
 
-    @staticmethod
-    def _plate_crop_quality(crop):
-        if crop is None or crop.size == 0:
-            return 0.0
-
-        height, width = crop.shape[:2]
-        if height < 8 or width < 24:
-            return 0.0
-
-        scale = min(1.0, 220.0 / max(1, width))
-        sample = crop
-        if scale < 1.0:
-            sample = cv2.resize(
-                crop,
-                (max(1, int(width * scale)), max(1, int(height * scale))),
-                interpolation=cv2.INTER_AREA,
-            )
-
-        gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY) if len(sample.shape) == 3 else sample
-        sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        contrast = float(gray.std())
-        brightness = float(gray.mean())
-
-        sharpness_score = min(45.0, sharpness / 4.0)
-        contrast_score = min(25.0, contrast * 0.7)
-        size_score = min(20.0, width / 7.0, height / 2.2)
-        aspect = width / max(1.0, height)
-        aspect_score = 10.0 if 1.8 <= aspect <= 6.4 else 4.0
-        brightness_penalty = 0.0 if 35.0 <= brightness <= 225.0 else 8.0
-
-        return max(
-            0.0,
-            sharpness_score + contrast_score + size_score + aspect_score - brightness_penalty,
-        )
-
-    @staticmethod
-    def _plate_crop_cut_risk(crop):
-        if crop is None or crop.size == 0:
-            return 1.0
-
-        height, width = crop.shape[:2]
-        if height < 12 or width < 36:
-            return 1.0
-
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
-        if width > 240:
-            scale = 240.0 / width
-            gray = cv2.resize(
-                gray,
-                (240, max(1, int(height * scale))),
-                interpolation=cv2.INTER_AREA,
-            )
-            height, width = gray.shape[:2]
-
-        edge_w = max(3, int(width * 0.08))
-        edge_h = max(3, int(height * 0.10))
-        left = gray[:, :edge_w]
-        right = gray[:, width - edge_w :]
-        top = gray[:edge_h, :]
-        bottom = gray[height - edge_h :, :]
-        center = gray[edge_h : max(edge_h + 1, height - edge_h), edge_w : max(edge_w + 1, width - edge_w)]
-
-        center_contrast = max(1.0, float(center.std()))
-        left_pressure = min(1.0, float(left.std()) / center_contrast)
-        right_pressure = min(1.0, float(right.std()) / center_contrast)
-        top_pressure = min(1.0, float(top.std()) / center_contrast)
-        bottom_pressure = min(1.0, float(bottom.std()) / center_contrast)
-
-        horizontal_asymmetry = abs(left_pressure - right_pressure)
-        vertical_asymmetry = abs(top_pressure - bottom_pressure) * 0.35
-        one_sided_pressure = max(left_pressure, right_pressure)
-        if one_sided_pressure < 0.85:
-            return min(1.0, horizontal_asymmetry + vertical_asymmetry)
-
-        return min(1.0, horizontal_asymmetry * 1.8 + vertical_asymmetry)
-
-    @staticmethod
-    def _plate_crop_ghost_risk(crop):
-        if crop is None or crop.size == 0:
-            return 0.0
-
-        height, width = crop.shape[:2]
-        if height < 16 or width < 54:
-            return 0.0
-
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
-        if width > 220:
-            scale = 220.0 / width
-            gray = cv2.resize(
-                gray,
-                (220, max(1, int(height * scale))),
-                interpolation=cv2.INTER_AREA,
-            )
-
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        edges = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-        edges = np.abs(edges)
-        mean = float(edges.mean())
-        if mean <= 0.1:
-            return 0.0
-
-        edges = np.minimum(edges / mean, 5.0)
-        best_corr = 0.0
-        for shift in range(3, min(18, edges.shape[1] // 3)):
-            left = edges[:, :-shift]
-            right = edges[:, shift:]
-            left_centered = left - left.mean()
-            right_centered = right - right.mean()
-            denom = float(np.linalg.norm(left_centered) * np.linalg.norm(right_centered))
-            if denom <= 1e-6:
-                continue
-            corr = float((left_centered * right_centered).sum() / denom)
-            best_corr = max(best_corr, corr)
-
-        return max(0.0, min(1.0, best_corr))
-
-    @staticmethod
-    def _evidence_detection(detection):
-        return {
-            key: value
-            for key, value in detection.items()
-            if not key.startswith("_")
-        }
-
-    def _activity_evidence_for_detection(self, detection):
-        track_id = detection.get("track_id")
-        if track_id is None:
-            return None, None, None
-
-        activity = self.activity_tracks.get(f"track:{track_id}")
-        if not activity:
-            return None, None, None
-
-        return (
-            activity.get("best_frame"),
-            activity.get("best_crop"),
-            activity.get("best_detection"),
-        )
-
     def _prepare_crop_items(self, crops, frame_bytes):
         prepared = []
         for item in crops:
             detection = item["detection"]
-            evidence_frame, evidence_crop, evidence_detection = self._activity_evidence_for_detection(detection)
-            crop_for_evidence = evidence_crop if evidence_crop is not None else item["crop"]
+            evidence_frame, evidence_crop, evidence_detection = self.activity_tracker.get_evidence(detection.get("track_id"))
+            use_evidence = (
+                evidence_crop is not None
+                and evidence_detection is not None
+                and str(evidence_detection.get("plate_text") or "").strip()
+            )
+            incident_detection = dict(evidence_detection) if use_evidence else detection
+            if use_evidence:
+                for key in ("speed_kmh", "speed_status"):
+                    if detection.get(key) is not None:
+                        incident_detection[key] = detection.get(key)
+            crop_for_evidence = evidence_crop if use_evidence else item["crop"]
             crop_bytes = encode_jpeg(crop_for_evidence)
             if crop_bytes is None:
                 continue
 
             incident_frame_bytes = self._incident_frame_bytes(
-                evidence_detection or detection,
+                incident_detection,
                 frame_bytes,
-                evidence_frame=evidence_frame,
+                evidence_frame=evidence_frame if use_evidence else None,
             )
-            fuzzy_result = self._evaluate_incident(detection, incident_frame_bytes, crop_bytes)
+            fuzzy_result = self._evaluate_incident(incident_detection, incident_frame_bytes, crop_bytes)
             if fuzzy_result is not None:
                 detection["fuzzy_result"] = fuzzy_result
 

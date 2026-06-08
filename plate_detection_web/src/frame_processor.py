@@ -202,6 +202,24 @@ def draw_stats_overlay(image, stats):
         cv2.putText(image, row, (x1 + padding, y), font, font_scale, (226, 232, 240), 1, cv2.LINE_AA)
 
 
+def draw_char_bboxes(image, characters):
+    if not characters:
+        return
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    for index, char in enumerate(characters):
+        x1 = int(char.get("x1", 0))
+        y1 = int(char.get("y1", 0))
+        x2 = int(char.get("x2", 0))
+        y2 = int(char.get("y2", 0))
+        label = f"[{index}:{char.get('value', '?')}:{char.get('confidence', 0.0):.2f}]"
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(
+            image, label, (x1, max(0, y1 - 3)),
+            font, 0.35, (0, 255, 0), 1, cv2.LINE_AA,
+        )
+
+
 def encode_jpeg(image, quality=68):
     quality = int(clamp(quality, 35, 95))
     success, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])

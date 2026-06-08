@@ -4,6 +4,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
+MODELS_DIR = PROJECT_ROOT / "models"
 
 
 def load_env_file(path):
@@ -63,12 +64,14 @@ def resolve_model_path():
         return path if path.is_absolute() else BASE_DIR / path
 
     candidates = [
+        MODELS_DIR / "plate_detection" / "90mil_50 epocas.pt",
+        MODELS_DIR / "90mil_50 epocas.pt",
         BASE_DIR / "models" / "90mil_50 epocas.pt",
-        
-        #BASE_DIR / "models" / "90mil_10 epocas.pt",
-        #BASE_DIR / "models" / "lp_yolo11x_morsetech.pt",
-        #PROJECT_ROOT / "models" / "Best_epoch_2_90mil.pt",
-        #PROJECT_ROOT / "models" / "best_placas_ecuador.pt",
+        MODELS_DIR / "plate_detection" / "90mil_38 epocas.pt",
+        MODELS_DIR / "90mil_38 epocas.pt",
+        BASE_DIR / "models" / "90mil_38 epocas.pt",
+        MODELS_DIR / "best_placas_ecuador.pt",
+        MODELS_DIR / "Best_epoch_2_90mil.pt",
     ]
 
     for candidate in candidates:
@@ -78,37 +81,26 @@ def resolve_model_path():
     return candidates[0]
 
 
-def resolve_character_model_path():
-    configured = os.getenv("CHARACTER_MODEL_PATH")
+def resolve_cnn_model_path():
+    configured = os.getenv("CNN_MODEL_PATH")
     if configured:
         path = Path(configured)
         return path if path.is_absolute() else BASE_DIR / path
 
-    candidates = [
-        BASE_DIR / "models" / "Character-LP.pt",
-        BASE_DIR / "models" / "Charcter-LP.pt",
-    ]
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
-    matches = sorted((BASE_DIR / "models").glob("*Char*LP*.pt"))
-    if matches:
-        return matches[0]
-
-    return candidates[0]
+    # Default: the best_model.pth produced by train/character_detection/train.py
+    default = PROJECT_ROOT / "train" / "character_detection" / "outputs" / "models" / "best_model.pth"
+    return default
 
 
 class Config:
     MODEL_PATH = resolve_model_path()
-    CHARACTER_MODEL_PATH = resolve_character_model_path()
+    CNN_MODEL_PATH = resolve_cnn_model_path()
+    # "gray" = current behavior (trained distribution); "clahe" = enhanced crops
+    # Switch to "clahe" only after retraining CharCNN on CLAHE-sourced crops.
+    CNN_CROP_SOURCE = os.getenv("CNN_CROP_SOURCE", "gray")
     VIDEO_SOURCE = parse_video_source(os.getenv("VIDEO_SOURCE", "0"))
     CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.12"))
-    CHARACTER_CONFIDENCE_THRESHOLD = float(os.getenv("CHARACTER_CONFIDENCE_THRESHOLD", "0.25"))
     IMAGE_SIZE = int(os.getenv("IMAGE_SIZE", "640"))
-    CHARACTER_IMAGE_SIZE = int(os.getenv("CHARACTER_IMAGE_SIZE", "320"))
-    OCR_VARIANTS = int(os.getenv("OCR_VARIANTS", "4"))
     DEVICE = os.getenv("YOLO_DEVICE", "auto")
     TRACKER = os.getenv("YOLO_TRACKER", "botsort.yaml")
     IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))

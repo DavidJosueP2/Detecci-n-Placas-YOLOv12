@@ -1,8 +1,0 @@
-path: "D:\\Seventh Semester\\Inteligencia Arificial\\Proyecto Foto Radar\\Detecci\xF3\
-  n Placas YOLO\\datasets\\placas_ecuador_preparado"
-train: train/images
-val: valid/images
-test: test/images
-nc: 1
-names:
-- placa

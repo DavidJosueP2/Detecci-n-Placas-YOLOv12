@@ -109,6 +109,24 @@
                 </button>
               </div>
 
+              <div class="grid gap-3 border-t border-slate-200 pt-4 text-sm">
+                <div>
+                  <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-radar-700">Binarizacion OCR</p>
+                  <p class="mt-1 text-xs text-slate-500">Metodo usado para convertir la placa a blanco y negro antes de segmentar caracteres.</p>
+                </div>
+                <label class="grid gap-1">
+                  <span class="font-semibold text-slate-700">Metodo</span>
+                  <select id="binarizationMethod" class="h-10 w-full rounded-[4px] border border-slate-300 bg-white px-3 text-sm font-semibold outline-none focus:border-radar-700">
+                    <option value="otsu">Otsu</option>
+                    <option value="adaptive">Adaptativa</option>
+                  </select>
+                </label>
+                <button id="binarizationSaveButton" class="h-9 rounded-[4px] border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:border-radar-600 hover:text-radar-700" type="button">
+                  Guardar binarizacion
+                </button>
+                <p id="binarizationStatus" class="min-h-[20px] text-sm font-semibold text-slate-500"></p>
+              </div>
+
               <p id="saveStatus" class="min-h-[20px] text-sm font-semibold text-slate-500"></p>
             </div>
           </section>
@@ -210,6 +228,9 @@
       const emailEnabled = document.getElementById("emailEnabled");
       const emailSaveButton = document.getElementById("emailSaveButton");
       const emailStatus = document.getElementById("emailStatus");
+      const binarizationMethod = document.getElementById("binarizationMethod");
+      const binarizationSaveButton = document.getElementById("binarizationSaveButton");
+      const binarizationStatus = document.getElementById("binarizationStatus");
       const mamdaniOrders = {
         input_sets: ["Riesgo leve", "Riesgo moderado", "Riesgo grave"],
         output_sets: ["Leve", "Moderada", "Grave", "Muy grave"],
@@ -250,6 +271,10 @@
         y1: 0,
         x2: 1,
         y2: 1,
+      };
+      let binarizationConfig = {
+        method: "otsu",
+        options: ["otsu", "adaptive"],
       };
       let activeHandle = null;
       let activeOcrHandle = null;
@@ -346,15 +371,46 @@
       }
 
       async function loadConfig() {
-        const [speedResponse, ocrResponse] = await Promise.all([
+        const [speedResponse, ocrResponse, binarizationResponse] = await Promise.all([
           fetch("/api/speed_config", { cache: "no-store" }),
           fetch("/api/ocr_zone_config", { cache: "no-store" }),
+          fetch("/api/ocr_binarization_config", { cache: "no-store" }),
         ]);
         const speedData = await speedResponse.json();
         const ocrData = await ocrResponse.json();
+        const binarizationData = await binarizationResponse.json();
         if (speedData.ok) Object.assign(config, speedData.config);
         if (ocrData.ok) Object.assign(ocrConfig, ocrData.config);
+        if (binarizationData.ok) {
+          binarizationConfig = binarizationData.config;
+          drawBinarizationConfig();
+        }
         drawEditor();
+      }
+
+      function setBinarizationStatus(text, ok = true) {
+        binarizationStatus.textContent = text;
+        binarizationStatus.className = `min-h-[20px] text-sm font-semibold ${ok ? "text-radar-700" : "text-red-700"}`;
+      }
+
+      function drawBinarizationConfig() {
+        binarizationMethod.value = binarizationConfig.method || "otsu";
+      }
+
+      async function saveBinarizationConfig() {
+        const response = await fetch("/api/ocr_binarization_config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ method: binarizationMethod.value }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          setBinarizationStatus(data.error || "No se pudo guardar binarizacion", false);
+          return;
+        }
+        binarizationConfig = data.config;
+        drawBinarizationConfig();
+        setBinarizationStatus("Binarizacion OCR guardada");
       }
 
       function setMamdaniStatus(text, ok = true) {
@@ -771,6 +827,7 @@
       mamdaniMaxSpeed.addEventListener("change", drawMamdaniPreviews);
       mamdaniSaveButton.addEventListener("click", saveMamdaniConfig);
       emailSaveButton.addEventListener("click", saveEmailConfig);
+      binarizationSaveButton.addEventListener("click", saveBinarizationConfig);
       window.addEventListener("resize", drawMamdaniPreviews);
       liveButton.addEventListener("click", () => {
         liveStarted = !liveStarted;

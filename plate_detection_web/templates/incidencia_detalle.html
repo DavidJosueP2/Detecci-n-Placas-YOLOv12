@@ -50,6 +50,7 @@
 
         <aside class="grid content-start gap-4 border border-slate-200 p-4">
           <img class="h-32 w-full object-contain" src="{{ url_for('static', filename=incident.crop_path) }}" alt="Recorte de placa">
+          <a class="w-fit text-sm font-semibold text-radar-700 underline underline-offset-4 hover:text-radar-600" href="{{ url_for('incidencia_ocr_detalle', incident_id=incident.id) }}">Detalle OCR</a>
           <dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
             <dt class="text-slate-500">Fecha/hora</dt><dd class="font-semibold">{{ incident.created_at }}</dd>
             <dt class="text-slate-500">Placa</dt><dd class="font-semibold">{{ incident.plate_text }}</dd>
