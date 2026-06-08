@@ -27,9 +27,52 @@ def set_method(method: str) -> str:
     return _current_method
 
 
-def _chars_are_dark(gray: np.ndarray) -> bool:
-    """True when characters are darker than background (standard plate case)."""
-    return float(gray.mean()) > 100
+def _character_polarity_score(binary: np.ndarray) -> float:
+    """
+    Scores how much the white foreground looks like plate characters.
+
+    The selected mask must end as white characters over black background. A
+    plain brightness check is fragile because it confuses dark plates, shadows,
+    or glare with character polarity.
+    """
+    h, w = binary.shape[:2]
+    if h <= 0 or w <= 0:
+        return 0.0
+
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    score = 0.0
+    for label in range(1, num_labels):
+        x, y, bw, bh, area = stats[label]
+        if area <= 0:
+            continue
+
+        area_ratio = area / float(h * w)
+        height_ratio = bh / float(h)
+        width_ratio = bw / float(w)
+        fill_ratio = area / float(max(1, bw * bh))
+        center_y = centroids[label][1] / float(h)
+
+        if area_ratio < 0.0008 or area_ratio > 0.12:
+            continue
+        if height_ratio < 0.22 or height_ratio > 0.90:
+            continue
+        if width_ratio < 0.01 or width_ratio > 0.28:
+            continue
+        if fill_ratio < 0.12 or fill_ratio > 0.88:
+            continue
+
+        band_bonus = 1.4 if 0.30 <= center_y <= 0.82 else 0.75
+        score += area * height_ratio * band_bonus
+
+    return score
+
+
+def _ensure_character_foreground(binary: np.ndarray) -> np.ndarray:
+    """Return a mask where characters are white and background is black."""
+    inverted = cv2.bitwise_not(binary)
+    if _character_polarity_score(inverted) > _character_polarity_score(binary):
+        return inverted
+    return binary
 
 
 def adaptive(gray: np.ndarray, block_size: int = 31, C: int = 12) -> np.ndarray:
@@ -48,17 +91,13 @@ def adaptive(gray: np.ndarray, block_size: int = 31, C: int = 12) -> np.ndarray:
         cv2.THRESH_BINARY_INV,
         block_size, C,
     )
-    if not _chars_are_dark(gray):
-        binary = cv2.bitwise_not(binary)
-    return binary
+    return _ensure_character_foreground(binary)
 
 
 def otsu(gray: np.ndarray) -> np.ndarray:
     """Otsu's global threshold — useful when illumination is uniform."""
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    if not _chars_are_dark(gray):
-        binary = cv2.bitwise_not(binary)
-    return binary
+    return _ensure_character_foreground(binary)
 
 
 def cleanup(binary: np.ndarray, open_k: int = 2, close_k: int = 3) -> np.ndarray:
