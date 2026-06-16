@@ -1,0 +1,13 @@
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 1
+names: ['license']
+
+roboflow:
+  workspace: carlos-vargas-zv03x
+  project: placasecu
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/carlos-vargas-zv03x/placasecu/dataset/3
