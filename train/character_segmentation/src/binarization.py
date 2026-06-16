@@ -29,68 +29,50 @@ def set_method(method: str) -> str:
 
 def _character_polarity_score(binary: np.ndarray) -> float:
     """
-    Scores whether foreground=255 looks like plate characters.
+    Scores how much the white foreground looks like plate characters.
 
-    A global brightness heuristic breaks when the crop includes dark car body
-    around a white plate. Component shape is more reliable: the chosen polarity
-    should produce several medium-height, narrow-ish connected components,
-    not one large plate/background blob.
+    The selected mask must end as white characters over black background. A
+    plain brightness check is fragile because it confuses dark plates, shadows,
+    or glare with character polarity.
     """
     h, w = binary.shape[:2]
-    img_area = max(1, h * w)
-    foreground_ratio = float(np.count_nonzero(binary)) / img_area
-    if foreground_ratio <= 0.005 or foreground_ratio >= 0.72:
-        return -10.0
+    if h <= 0 or w <= 0:
+        return 0.0
 
-    num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
-        binary, connectivity=8
-    )
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
     score = 0.0
-    character_like = 0
-    huge_components = 0
-
     for label in range(1, num_labels):
-        x = int(stats[label, cv2.CC_STAT_LEFT])
-        y = int(stats[label, cv2.CC_STAT_TOP])
-        bw = int(stats[label, cv2.CC_STAT_WIDTH])
-        bh = int(stats[label, cv2.CC_STAT_HEIGHT])
-        area = int(stats[label, cv2.CC_STAT_AREA])
-        area_ratio = area / img_area
-
-        if area_ratio > 0.22:
-            huge_components += 1
-            continue
-        if area_ratio < 0.0004:
+        x, y, bw, bh, area = stats[label]
+        if area <= 0:
             continue
 
-        height_ratio = bh / max(1, h)
-        width_ratio = bw / max(1, w)
-        aspect = bw / max(1, bh)
-        touches_border = x <= 1 or y <= 1 or x + bw >= w - 1 or y + bh >= h - 1
+        area_ratio = area / float(h * w)
+        height_ratio = bh / float(h)
+        width_ratio = bw / float(w)
+        fill_ratio = area / float(max(1, bw * bh))
+        center_y = centroids[label][1] / float(h)
 
-        if 0.16 <= height_ratio <= 0.82 and 0.006 <= width_ratio <= 0.24 and 0.08 <= aspect <= 1.45:
-            character_like += 1
-            score += 1.0
-            score += min(0.7, height_ratio)
-            if touches_border:
-                score -= 0.25
+        if area_ratio < 0.0008 or area_ratio > 0.12:
+            continue
+        if height_ratio < 0.22 or height_ratio > 0.90:
+            continue
+        if width_ratio < 0.01 or width_ratio > 0.28:
+            continue
+        if fill_ratio < 0.12 or fill_ratio > 0.88:
+            continue
 
-    if character_like == 0:
-        score -= 4.0
+        band_bonus = 1.4 if 0.30 <= center_y <= 0.82 else 0.75
+        score += area * height_ratio * band_bonus
 
-    target_count_bonus = max(0.0, 1.0 - abs(character_like - 7) / 7.0)
-    score += target_count_bonus * 2.0
-    score -= huge_components * 2.5
-    score -= max(0.0, foreground_ratio - 0.45) * 5.0
     return score
 
 
 def _ensure_character_foreground(binary: np.ndarray) -> np.ndarray:
-    """
-    Returns a mask where characters are white (255) and background is black.
-    """
-    inverse = cv2.bitwise_not(binary)
-    return binary if _character_polarity_score(binary) >= _character_polarity_score(inverse) else inverse
+    """Return a mask where characters are white and background is black."""
+    inverted = cv2.bitwise_not(binary)
+    if _character_polarity_score(inverted) > _character_polarity_score(binary):
+        return inverted
+    return binary
 
 
 def adaptive(gray: np.ndarray, block_size: int = 31, C: int = 12) -> np.ndarray:
