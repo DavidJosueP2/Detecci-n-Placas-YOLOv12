@@ -16,7 +16,7 @@ def segment(binary: np.ndarray) -> list[dict]:
 
     Pass 1 — very loose filters: collect everything that could be a character.
     Pass 2 — adaptive: keep only components whose height is within
-              [0.25, 2.0] × median height of the top candidates.
+              [0.45, 2.5] × the largest main-character height.
 
     This tolerates 2-3× height variation across a perspective-warped plate
     without tuning any threshold manually.
@@ -63,7 +63,8 @@ def segment(binary: np.ndarray) -> list[dict]:
     #
     # Using the single largest component's height as reference:
     #   ref_h = height of the largest-area candidate (always a main char)
-    #   Lower bound = 0.25 × ref_h → ECUADOR chars (18% of ref_h) are filtered
+    #   Lower bound = 0.45 × ref_h → ECUADOR chars are filtered even when
+    #   binarization leaves them clean and connected
     #   Upper bound = 2.5 × ref_h → tolerates 2.5× size variation from perspective
     candidates.sort(key=lambda c: c["_area"], reverse=True)
     ref_h = float(candidates[0]["h"])
@@ -74,7 +75,7 @@ def segment(binary: np.ndarray) -> list[dict]:
         h_ratio = c["h"] / ref_h
         aspect = c["w"] / max(c["h"], 1)
 
-        if not (0.25 <= h_ratio <= 2.5):
+        if not (0.45 <= h_ratio <= 2.5):
             continue
         if not (0.08 <= aspect <= 3.0):
             continue

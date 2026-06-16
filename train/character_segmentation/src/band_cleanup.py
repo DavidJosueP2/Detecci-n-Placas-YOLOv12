@@ -6,11 +6,11 @@ import cv2
 import numpy as np
 
 
-def remove_small_blobs(binary: np.ndarray, height_ratio: float = 0.25) -> np.ndarray:
+def remove_small_blobs(binary: np.ndarray, height_ratio: float = 0.45) -> np.ndarray:
     """
     Keeps components tall enough to belong to the main plate text row.
-    Small top text, dots, screws, and thin border fragments are removed before
-    character candidate extraction.
+    Small top text such as ECUADOR, dots, screws, and thin border fragments
+    are removed before character candidate extraction.
     """
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         binary, connectivity=8

@@ -208,6 +208,64 @@ def make_character_strip(char_images):
     return canvas
 
 
+def draw_character_boxes(base_image, characters, label_prefix=""):
+    if base_image is None or getattr(base_image, "size", 0) == 0 or not characters:
+        return None
+
+    if len(base_image.shape) == 2:
+        canvas = cv2.cvtColor(base_image, cv2.COLOR_GRAY2BGR)
+    else:
+        canvas = base_image.copy()
+
+    height, width = canvas.shape[:2]
+    valid_chars = [
+        char for char in characters
+        if char.get("x1") is not None
+        and char.get("y1") is not None
+        and char.get("x2") is not None
+        and char.get("y2") is not None
+    ]
+    if not valid_chars:
+        return None
+
+    max_x = max(float(char.get("x2", 0.0)) for char in valid_chars)
+    max_y = max(float(char.get("y2", 0.0)) for char in valid_chars)
+    scale_x = width / max_x if max_x > width and max_x > 0 else 1.0
+    scale_y = height / max_y if max_y > height and max_y > 0 else 1.0
+
+    for index, char in enumerate(valid_chars):
+        x1 = int(float(char["x1"]) * scale_x)
+        y1 = int(float(char["y1"]) * scale_y)
+        x2 = int(float(char["x2"]) * scale_x)
+        y2 = int(float(char["y2"]) * scale_y)
+        x1 = max(0, min(width - 1, x1))
+        y1 = max(0, min(height - 1, y1))
+        x2 = max(0, min(width - 1, x2))
+        y2 = max(0, min(height - 1, y2))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        confidence = float(char.get("confidence") or 0.0)
+        value = str(char.get("value") or index + 1)
+        color = (0, int(200 + min(55, confidence * 55)), 40)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+        label = f"{label_prefix}{value}"
+        if confidence > 0:
+            label = f"{label} {confidence:.0%}"
+        cv2.putText(
+            canvas,
+            label,
+            (x1, max(12, y1 - 4)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    return canvas
+
+
 OCR_STAGE_INFO = {
     "0_perspective_correction": (
         "Correccion de perspectiva",
@@ -291,7 +349,7 @@ def load_static_image(relative_path):
     return cv2.imread(str(path), cv2.IMREAD_COLOR)
 
 
-def build_ocr_debug(crop):
+def build_ocr_debug(crop, fallback_characters=None):
     steps = []
     debug = None
 
@@ -335,17 +393,32 @@ def build_ocr_debug(crop):
                 bbox_image,
                 True,
             ))
+        elif fallback_characters:
+            base_image = (debug or {}).get("stages", {}).get("1_original")
+            if base_image is None:
+                base_image = crop
+            fallback_image = draw_character_boxes(base_image, fallback_characters)
+            if fallback_image is not None:
+                steps.append(make_ocr_step(
+                    "Caracteres guardados en registro",
+                    "Cajas y letras recuperadas del OCR que se guardo con este registro.",
+                    fallback_image,
+                    True,
+                ))
 
     return steps, debug
 
 
 def render_ocr_detail(crop, detection, active_page, back_url):
-    steps, debug = build_ocr_debug(crop)
+    display_detection = dict(detection or {})
+    steps, debug = build_ocr_debug(
+        crop,
+        fallback_characters=display_detection.get("characters") or [],
+    )
     debug_text = debug.get("text") if debug else ""
     debug_conf = debug.get("confidence") if debug else None
 
-    display_detection = dict(detection or {})
-    if debug is not None:
+    if debug is not None and str(debug_text or "").strip():
         display_detection["plate_text"] = debug_text
         display_detection["plate_text_confidence"] = debug_conf
         display_detection["characters"] = debug.get("characters") or []
